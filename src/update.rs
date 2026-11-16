@@ -174,6 +174,18 @@ pub fn cleanup_old_files() {
     for n in names {
         let _ = fs::remove_file(dir.join(n));
     }
+    // *.old files renamed aside during a locked-file update - only look
+    // inside our own managed dirs (bin/, lists/), never user files
+    for sub in ["bin", "lists"] {
+        if let Ok(rd) = fs::read_dir(dir.join(sub)) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_file() && p.extension().is_some_and(|x| x == "old") {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+    }
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
@@ -198,13 +210,34 @@ fn copy_tree_level(src: &Path, dst: &Path, top: bool) -> Result<(), String> {
         if top && (KEEP.contains(&fname.as_ref()) || fname == APP_EXE) {
             continue;
         }
+        // skip untouched files - avoids touching the WinDivert driver
+        // image, which stays locked by the kernel for the whole boot
+        if d.is_file() && same_file(&s, &d) {
+            continue;
+        }
         copy_retry(&s, &d)?;
     }
     Ok(())
 }
 
-/// Copy with retries - WinDivert files can stay locked briefly after the
-/// engine stops.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::read(a), fs::read(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// `foo.sys` -> `foo.sys.old` (rename-aside target for locked files)
+fn aside_path(d: &Path) -> PathBuf {
+    let mut p = d.as_os_str().to_os_string();
+    p.push(".old");
+    p.into()
+}
+
+/// Copy with retries - engine files can stay locked briefly after it
+/// stops. A file that stays locked (loaded WinDivert driver, leftover
+/// winws/cygwin process) cannot be opened for writing but CAN be renamed
+/// aside, same trick used for the running exe.
 fn copy_retry(s: &Path, d: &Path) -> Result<(), String> {
     let mut last_err = String::new();
     for _ in 0..8 {
@@ -213,6 +246,18 @@ fn copy_retry(s: &Path, d: &Path) -> Result<(), String> {
             Err(e) => {
                 last_err = e.to_string();
                 std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+    if d.is_file() {
+        let aside = aside_path(d);
+        let _ = fs::remove_file(&aside);
+        if fs::rename(d, &aside).is_ok() {
+            if let Err(e) = fs::copy(s, d) {
+                let _ = fs::rename(&aside, d);
+                last_err = e.to_string();
+            } else {
+                return Ok(());
             }
         }
     }
