@@ -80,6 +80,57 @@ pub fn config_set(text: &str, key: &str, value: &str) -> String {
 /// Process names the watcher looks for by default (overridable in config.ini).
 pub const DEFAULT_WATCH_PROCESSES: &[&str] = &["aion2.exe", "aion.bin", "aion.exe", "aion64.bin"];
 
+// ---------------- update check helpers ----------------
+
+/// Parse "v1.2.3" / "1.2.3" / "1.2.3-beta" into (1,2,3). Missing parts
+/// default to 0. Returns None when the leading token is not numeric.
+#[allow(dead_code)] // used on Windows + in tests
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let s = s.trim().trim_start_matches(['v', 'V']);
+    let s = s.split(['-', '+']).next().unwrap_or("");
+    let mut parts = s.splitn(4, '.');
+    let mut out = [0u32; 3];
+    for slot in &mut out {
+        match parts.next() {
+            Some(p) => *slot = p.trim().parse().ok()?,
+            None => break,
+        }
+    }
+    Some((out[0], out[1], out[2]))
+}
+
+/// True when release `tag` names a strictly newer version than `current`.
+#[allow(dead_code)] // used on Windows + in tests
+pub fn version_newer(tag: &str, current: &str) -> bool {
+    match (parse_version(tag), parse_version(current)) {
+        (Some(t), Some(c)) => t > c,
+        _ => false,
+    }
+}
+
+/// Extract (version, download-url) from a GitHub `releases/latest` JSON
+/// body when it carries a `*-win64.zip` asset and is newer than `current`.
+#[allow(dead_code)] // used on Windows + in tests
+pub fn release_from_json(json: &serde_json::Value, current: &str) -> Option<(String, String)> {
+    let tag = json.get("tag_name")?.as_str()?;
+    if !version_newer(tag, current) {
+        return None;
+    }
+    let version = tag.trim().trim_start_matches(['v', 'V']).to_string();
+    let assets = json.get("assets")?.as_array()?;
+    for a in assets {
+        let name = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let url = a
+            .get("browser_download_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if name.ends_with("-win64.zip") && url.starts_with("https://") {
+            return Some((version, url.to_string()));
+        }
+    }
+    None
+}
+
 /// True when any watch name appears as an image name in `tasklist /FO CSV`
 /// output. Locale-independent: only matches the quoted image-name column.
 /// Kept for tests and as a fallback reference; the runtime uses Toolhelp.
@@ -179,6 +230,45 @@ mod tests {
         // replaces only first occurrence
         let t4 = config_set("k=1\nk=2\n", "k", "9");
         assert_eq!(t4.matches("k=9").count(), 1);
+    }
+
+    #[test]
+    fn version_compare() {
+        assert!(version_newer("v1.0.1", "1.0.0"));
+        assert!(version_newer("1.1.0", "1.0.9"));
+        assert!(version_newer("v2.0.0", "1.9.9"));
+        assert!(version_newer("1.0.1-beta", "1.0.0"));
+        assert!(!version_newer("v1.0.0", "1.0.0"));
+        assert!(!version_newer("v0.9.9", "1.0.0"));
+        assert!(!version_newer("garbage", "1.0.0"));
+        assert!(!version_newer("v1.0.0", "garbage"));
+        // two-part tags
+        assert!(version_newer("v1.1", "1.0.9"));
+        assert!(!version_newer("v1.0", "1.0.0"));
+    }
+
+    #[test]
+    fn release_json_parsing() {
+        let json = serde_json::json!({
+            "tag_name": "v1.2.0",
+            "assets": [
+                {"name": "source.tar.gz", "browser_download_url": "https://x/src"},
+                {"name": "SimpleAionStabilizer-v1.2.0-win64.zip",
+                 "browser_download_url": "https://x/app.zip"}
+            ]
+        });
+        let (v, url) = release_from_json(&json, "1.0.0").unwrap();
+        assert_eq!(v, "1.2.0");
+        assert_eq!(url, "https://x/app.zip");
+
+        // same version -> no update
+        assert!(release_from_json(&json, "1.2.0").is_none());
+        // no matching asset
+        let nozip = serde_json::json!({"tag_name": "v9.9.9", "assets": [{"name": "src.zip", "browser_download_url": "https://x/a"}]});
+        assert!(release_from_json(&nozip, "1.0.0").is_none());
+        // assets missing entirely
+        let noassets = serde_json::json!({"tag_name": "v9.9.9"});
+        assert!(release_from_json(&noassets, "1.0.0").is_none());
     }
 
     #[test]

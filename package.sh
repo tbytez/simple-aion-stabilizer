@@ -6,9 +6,10 @@
 #   zapret-discord-youtube-1.10.4 release zip).
 set -euo pipefail
 
-VERSION="1.0.0"
 APP="SimpleAionStabilizer"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/Cargo.toml" | head -1)"
+[ -n "$VERSION" ] || { echo "cannot read version from Cargo.toml"; exit 1; }
 ZAPRET_SRC="${1:-/tmp/zapret-dl/zapret/zapret-discord-youtube-1.10.4}"
 OUT="$HERE/dist/${APP}"
 ZIP="$HERE/dist/${APP}-v${VERSION}-win64.zip"

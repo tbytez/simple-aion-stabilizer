@@ -1,7 +1,7 @@
 //! Custom-painted egui UI: frameless window, glowing power button, toggle
 //! switches, dark/light palettes following the Windows theme.
 
-use crate::controller::{Cmd, Controller, Status};
+use crate::controller::{Cmd, Controller, Status, UpdateInfo, UpdateState};
 use crate::theme::{self, Palette};
 use egui::{
     vec2, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Mesh, Pos2, Rect,
@@ -18,6 +18,10 @@ pub struct App {
     dismissed_error: Option<String>,
     frame: u32,
     start: Instant,
+    /// Last observed real visibility (IsWindowVisible), for re-syncing
+    /// winit's cached window flags after external ShowWindow calls.
+    #[cfg(windows)]
+    was_visible: bool,
     #[cfg(not(windows))]
     shot: Option<String>,
 }
@@ -30,6 +34,8 @@ impl App {
             dismissed_error: None,
             frame: 0,
             start: Instant::now(),
+            #[cfg(windows)]
+            was_visible: false,
             #[cfg(not(windows))]
             shot: std::env::var("AION_SHOT").ok(),
         }
@@ -43,6 +49,20 @@ impl eframe::App for App {
         self.status = self.ctrl.status();
         self.frame = self.frame.wrapping_add(1);
 
+        // The tray thread and second-instance launches re-show the window
+        // with raw ShowWindow, which winit's cached VISIBLE flag never sees;
+        // ViewportCommand::Visible only reaches ShowWindow when it changes
+        // that cache, so after an external re-show the next hide is silently
+        // dropped. Detect the re-show and force the cache back in sync.
+        #[cfg(windows)]
+        {
+            let now_visible = crate::sys::main_window_visible();
+            if now_visible && !self.was_visible {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+            self.was_visible = now_visible;
+        }
+
         // close / minimize -> hide to tray
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -52,8 +72,15 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // repaint cadence: smooth pulse while running, idle poll otherwise
-        ctx.request_repaint_after(if self.status.running {
+        // Keep a slow visibility check for external tray ShowWindow calls.
+        // Hidden windows have no animation work to do.
+        #[cfg(windows)]
+        let visible = self.was_visible;
+        #[cfg(not(windows))]
+        let visible = true;
+        ctx.request_repaint_after(if !visible {
+            Duration::from_secs(1)
+        } else if self.status.running {
             Duration::from_millis(40)
         } else {
             Duration::from_millis(900)
@@ -64,6 +91,10 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        if !self.was_visible {
+            return;
+        }
         let pal = theme::palette(ui.ctx());
         let rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(rect, CornerRadius::ZERO, pal.bg);
@@ -74,6 +105,9 @@ impl eframe::App for App {
         if let Some(err) = self.visible_error() {
             y += 10.0;
             y = self.paint_error(ui, rect, y, err.to_string(), pal);
+        } else if let Some(upd) = self.status.update.clone() {
+            y += 10.0;
+            y = self.paint_update(ui, rect, y, &upd, pal);
         }
         y += 12.0;
         let _ = self.paint_settings(ui, rect, y, pal);
@@ -212,7 +246,7 @@ impl App {
         let resp = ui.allocate_rect(btn, Sense::click());
         let hover = resp.hovered();
         let down = resp.is_pointer_button_down_on();
-        let scale = if down {
+        let target_scale = if down {
             0.96
         } else if hover {
             1.03
@@ -220,11 +254,9 @@ impl App {
             1.0
         };
 
-        let (a, b) = if running {
-            (pal.on_a, pal.on_b)
-        } else {
-            (pal.off_a, pal.off_b)
-        };
+        let scale = ctx.animate_value_with_time(resp.id.with("scale"), target_scale, 0.12);
+        let active = ctx.animate_bool_with_time(resp.id.with("active"), running, 0.25);
+        let (a, b) = (lerp(pal.off_a, pal.on_a, active), lerp(pal.off_b, pal.on_b, active));
         gradient_ring(
             ui.painter(),
             Pos2::new(cx, cy),
@@ -388,6 +420,92 @@ impl App {
         );
         if r.clicked() {
             self.dismissed_error = self.status.error.clone();
+        }
+        rect.max.y
+    }
+
+    // ---------------- update banner ----------------
+
+    fn paint_update(
+        &mut self,
+        ui: &mut egui::Ui,
+        win: Rect,
+        y: f32,
+        upd: &UpdateInfo,
+        pal: Palette,
+    ) -> f32 {
+        let ctx = ui.ctx().clone();
+        let rect = Rect::from_min_size(
+            Pos2::new(win.min.x + MARGIN, y),
+            vec2(win.width() - 2.0 * MARGIN, 40.0),
+        );
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(10), pal.chip_bg);
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(10),
+            Stroke::new(1.0, pal.accent_a.gamma_multiply(0.55)),
+            StrokeKind::Inside,
+        );
+
+        // up arrow icon
+        let ic = Pos2::new(rect.min.x + 16.0, rect.center().y);
+        ui.painter()
+            .circle_stroke(ic, 6.0, Stroke::new(1.5, pal.accent_b));
+        ui.painter().line_segment(
+            [ic + vec2(0.0, 3.0), ic + vec2(0.0, -3.0)],
+            Stroke::new(1.4, pal.accent_b),
+        );
+        ui.painter().line_segment(
+            [ic + vec2(-2.5, -0.5), ic + vec2(0.0, -3.0)],
+            Stroke::new(1.4, pal.accent_b),
+        );
+        ui.painter().line_segment(
+            [ic + vec2(2.5, -0.5), ic + vec2(0.0, -3.0)],
+            Stroke::new(1.4, pal.accent_b),
+        );
+
+        let (msg, action) = match &upd.state {
+            UpdateState::Available => (format!("v{} available", upd.version), Some("UPDATE")),
+            UpdateState::Working(p) => (format!("Downloading update... {p}%"), None),
+            UpdateState::Failed(e) => (format!("Update failed: {e}"), Some("RETRY")),
+        };
+        ui.painter().text(
+            Pos2::new(rect.min.x + 30.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            truncate(&msg, 32),
+            FontId::new(11.0, FontFamily::Name("md".into())),
+            pal.text,
+        );
+
+        if let Some(label) = action {
+            let btn = Rect::from_center_size(
+                Pos2::new(rect.max.x - 36.0, rect.center().y),
+                vec2(56.0, 24.0),
+            );
+            let r = ui.allocate_rect(btn, Sense::click());
+            if r.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            ui.painter().rect_filled(
+                btn,
+                CornerRadius::same(12),
+                if r.hovered() {
+                    pal.accent_a
+                } else {
+                    pal.accent_a.gamma_multiply(0.8)
+                },
+            );
+            ui.painter().text(
+                btn.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::new(9.5, FontFamily::Name("sb".into())),
+                Color32::WHITE,
+            );
+            if r.clicked() {
+                self.ctrl.send(Cmd::ApplyUpdate);
+            }
         }
         rect.max.y
     }

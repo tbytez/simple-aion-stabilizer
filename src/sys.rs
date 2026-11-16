@@ -39,6 +39,15 @@ pub fn main_hwnd() -> HWND {
     unsafe { FindWindowW(ptr::null(), wide(crate::TITLE).as_ptr()) }
 }
 
+/// Is the main window actually visible right now (WS_VISIBLE)?
+/// Ground truth for re-shows that bypass winit's flag cache.
+pub fn main_window_visible() -> bool {
+    unsafe {
+        let hwnd = main_hwnd();
+        !hwnd.is_null() && IsWindowVisible(hwnd) != 0
+    }
+}
+
 /// Restore + foreground the main window.
 pub fn show_main_window() {
     unsafe {

@@ -46,6 +46,10 @@ and the app watches for the game - it starts the engine when Aion 2 runs
 and stops it when you quit. (Watched exe names can be changed with
 `watch_process=` in `config.ini`.)
 
+The app checks GitHub for a newer release on start and offers a
+one-click in-place update (it keeps your `config.ini` and `profile.txt`).
+Disable the check with `update_check=0` in `config.ini`.
+
 ## Planned
 
 - **Multi-profile support**: pick a profile in the UI (`profiles/*.txt`)

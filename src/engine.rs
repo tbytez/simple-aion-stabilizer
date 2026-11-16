@@ -151,3 +151,22 @@ fn load_profile(app_dir: &Path) -> Result<Vec<String>, String> {
 
 #[cfg(windows)]
 const DEFAULT_PROFILE: &str = include_str!("../assets/profile.txt");
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_start_stop_reaps_children() {
+        let mut engine = Engine::new();
+        for _ in 0..200 {
+            engine.start(Path::new("."), false).unwrap();
+            assert!(engine.is_running());
+            assert!(engine.start(Path::new("."), false).is_err());
+            engine.stop();
+            assert!(!engine.is_running());
+            assert!(engine.child.is_none());
+            engine.stop();
+        }
+    }
+}

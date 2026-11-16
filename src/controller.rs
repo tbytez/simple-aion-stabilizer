@@ -17,7 +17,24 @@ pub enum Cmd {
     SetWatch(bool),
     SetStartupEngine(bool),
     SetAutostart(bool),
+    CheckUpdate,
+    ApplyUpdate,
     Shutdown,
+}
+
+#[derive(Clone)]
+pub enum UpdateState {
+    Available,
+    Working(u8),
+    Failed(String),
+}
+
+#[derive(Clone)]
+pub struct UpdateInfo {
+    pub version: String,
+    #[allow(dead_code)] // read only by the Windows updater
+    pub url: String,
+    pub state: UpdateState,
 }
 
 #[derive(Clone, Default)]
@@ -29,6 +46,7 @@ pub struct Status {
     pub startup_engine: bool,
     pub autostart: bool,
     pub error: Option<String>,
+    pub update: Option<UpdateInfo>,
 }
 
 #[derive(Clone)]
@@ -41,6 +59,7 @@ pub struct Config {
     pub autostart_engine: bool,
     pub watch_game: bool,
     pub watch_names: Vec<String>,
+    pub update_check: bool,
 }
 
 impl Config {
@@ -54,6 +73,7 @@ impl Config {
                 "watch_process",
                 core::DEFAULT_WATCH_PROCESSES,
             ),
+            update_check: core::config_get_bool(config_text, "update_check", true),
         }
     }
 }
@@ -80,6 +100,112 @@ fn save_config(app_dir: &Path, key: &str, value: &str) {
     let path = app_dir.join("config.ini");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let _ = std::fs::write(&path, core::config_set(&text, key, value));
+}
+
+/// GitHub release check on a worker thread; silent when it fails or the
+/// app is current.
+#[cfg(windows)]
+fn check_for_update(status: Arc<Mutex<Status>>, wake: Arc<dyn Fn() + Send + Sync>) {
+    std::thread::spawn(move || {
+        if let Ok(Some((version, url))) = crate::update::check_latest() {
+            if let Ok(mut s) = status.lock() {
+                // never clobber an in-progress download
+                let busy = matches!(s.update.as_ref().map(|u| &u.state), Some(UpdateState::Working(_)));
+                if !busy {
+                    s.update = Some(UpdateInfo {
+                        version,
+                        url,
+                        state: UpdateState::Available,
+                    });
+                }
+            }
+            wake();
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn check_for_update(_status: Arc<Mutex<Status>>, _wake: Arc<dyn Fn() + Send + Sync>) {}
+
+/// Stop the engine (it holds file locks) and hand the update to a worker.
+#[cfg(windows)]
+fn apply_update_now(
+    app_dir: PathBuf,
+    engine: &mut Engine,
+    status: Arc<Mutex<Status>>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let info = status
+        .lock()
+        .ok()
+        .and_then(|s| s.update.clone())
+        .filter(|i| !matches!(i.state, UpdateState::Working(_)));
+    let Some(info) = info else { return };
+    engine.stop();
+    if let Ok(mut s) = status.lock() {
+        s.running = false;
+        s.auto_started = false;
+        if let Some(u) = &mut s.update {
+            u.state = UpdateState::Working(0);
+        }
+    }
+    wake();
+    std::thread::spawn(move || apply_update(app_dir, info, status, wake));
+}
+
+#[cfg(not(windows))]
+fn apply_update_now(
+    _app_dir: PathBuf,
+    _engine: &mut Engine,
+    _status: Arc<Mutex<Status>>,
+    _wake: Arc<dyn Fn() + Send + Sync>,
+) {
+}
+
+/// Worker: download -> extract -> swap -> relaunch. Exits the process on
+/// success; on failure reports UpdateState::Failed (retry keeps the url).
+#[cfg(windows)]
+fn apply_update(
+    app_dir: PathBuf,
+    info: UpdateInfo,
+    status: Arc<Mutex<Status>>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let mut on_pct = {
+        let status = status.clone();
+        let wake = wake.clone();
+        move |pct: u8| {
+            if let Ok(mut s) = status.lock() {
+                if let Some(u) = &mut s.update {
+                    u.state = UpdateState::Working(pct);
+                }
+            }
+            wake();
+        }
+    };
+
+    let result = crate::update::download(&info.url, &mut on_pct).and_then(|zip| {
+        let r = crate::update::extract(&zip).and_then(|dir| {
+            let r = crate::update::apply(&app_dir, &dir)
+                .and_then(|_| crate::update::relaunch(&app_dir));
+            let _ = std::fs::remove_dir_all(&dir);
+            r
+        });
+        let _ = std::fs::remove_file(&zip);
+        r
+    });
+
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            if let Ok(mut s) = status.lock() {
+                if let Some(u) = &mut s.update {
+                    u.state = UpdateState::Failed(e);
+                }
+            }
+            wake();
+        }
+    }
 }
 
 impl Controller {
@@ -125,7 +251,18 @@ fn run(
     // until the game exits.
     let mut manual_latch = false;
     let mut last_auto_fail: Option<Instant> = None;
-    let mut poll_tick = 0u32;
+    let mut last_poll = Instant::now();
+
+    // refresh the autostart entry with the current exe path - heals it
+    // after an update renamed or replaced the binary
+    if autostart_enabled() {
+        autostart_set(true);
+    }
+
+    // one release check at startup (config.ini: update_check=0 disables)
+    if cfg.update_check {
+        check_for_update(status.clone(), wake.clone());
+    }
 
     macro_rules! set_status {
         ($f:ident, $v:expr) => {{
@@ -136,13 +273,39 @@ fn run(
         }};
     }
 
+    // preview: AION_FAKE_UPDATE=1|working|failed shows the update banner
+    #[cfg(not(windows))]
+    if let Ok(fake) = std::env::var("AION_FAKE_UPDATE") {
+        let state = match fake.as_str() {
+            "working" | "downloading" => UpdateState::Working(42),
+            "failed" | "fail" => UpdateState::Failed("mock failure".into()),
+            _ => UpdateState::Available,
+        };
+        set_status!(
+            update,
+            Some(UpdateInfo {
+                version: "9.9.9".into(),
+                url: String::new(),
+                state,
+            })
+        );
+    }
+
     loop {
+        // while an update downloads/applies, block engine (re)starts - it
+        // would re-lock the winws/WinDivert files the swap needs to write
+        let updating = status
+            .lock()
+            .map(|s| matches!(s.update.as_ref().map(|u| &u.state), Some(UpdateState::Working(_))))
+            .unwrap_or(false);
+
         match rx.recv_timeout(Duration::from_millis(400)) {
             Ok(Cmd::Shutdown) => {
                 engine.stop();
                 set_status!(running, false);
                 break;
             }
+            Ok(Cmd::Toggle) | Ok(Cmd::Start { .. }) if updating => {}
             Ok(Cmd::Toggle) => {
                 if engine.is_running() {
                     engine.stop();
@@ -208,6 +371,12 @@ fn run(
                 autostart_set(on);
                 set_status!(autostart, autostart_enabled());
             }
+            Ok(Cmd::CheckUpdate) => {
+                check_for_update(status.clone(), wake.clone());
+            }
+            Ok(Cmd::ApplyUpdate) => {
+                apply_update_now(app_dir.clone(), &mut engine, status.clone(), wake.clone());
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 engine.stop();
@@ -225,10 +394,9 @@ fn run(
         }
 
         // game presence poll (every ~2s)
-        poll_tick += 1;
         let watch_on = status.lock().map(|s| s.watch).unwrap_or(false);
-        if poll_tick >= 5 {
-            poll_tick = 0;
+        if last_poll.elapsed() >= Duration::from_secs(2) {
+            last_poll = Instant::now();
             if watch_on {
                 let now = procs::any_running(&cfg.watch_names);
                 if now != game_present {
@@ -255,6 +423,7 @@ fn run(
             && game_present
             && !manual_latch
             && !engine.is_running()
+            && !updating
             && last_auto_fail.map(|t| t.elapsed() > AUTO_RETRY_COOLDOWN).unwrap_or(true)
         {
             match engine.start(&app_dir, true) {

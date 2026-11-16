@@ -34,3 +34,8 @@ with manifest + icon).
 `AionStabilizer.exe` + `profile.txt` + `bin\` (winws/WinDivert from Flowseal
 zapret-discord-youtube bundle) + `lists\` (their lists + list-aion.txt +
 ipset-all.txt). App resolves everything relative to its own exe path.
+
+In-app updater (src/update.rs): checks GitHub `releases/latest`, expects a
+release asset named `*-win64.zip` containing the folder above. Update swaps
+files in place (rename-running-exe trick), preserves `config.ini` +
+`profile.txt`, relaunches with `--updated`.

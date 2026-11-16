@@ -10,6 +10,8 @@ mod theme;
 #[cfg(windows)]
 mod tray;
 mod ui;
+#[cfg(windows)]
+mod update;
 
 use controller::{Cmd, Config, Controller};
 use std::path::PathBuf;
@@ -22,9 +24,23 @@ fn main() {
     let start_tray = args.iter().any(|a| a == "--tray" || a == "--minimized");
 
     #[cfg(windows)]
-    if !sys::acquire_single_instance() {
-        sys::focus_existing_instance();
-        return;
+    {
+        // the updater relaunches us while the old process may still be
+        // exiting - retry the mutex briefly before giving up
+        let start_updated = args.iter().any(|a| a == "--updated");
+        let mut ok = sys::acquire_single_instance();
+        for _ in 0..40 {
+            if ok || !start_updated {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            ok = sys::acquire_single_instance();
+        }
+        if !ok {
+            sys::focus_existing_instance();
+            return;
+        }
+        update::cleanup_old_files();
     }
 
     let app_dir = std::env::current_exe()
