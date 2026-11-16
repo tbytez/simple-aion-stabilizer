@@ -11,7 +11,7 @@ brew install rustup mingw-w64
 /opt/homebrew/opt/rustup/bin/rustup target add x86_64-pc-windows-gnu
 ```
 
-IMPORTANT: brew's rustup is keg-only — cargo/rustc shims live in
+IMPORTANT: brew's rustup is keg-only - cargo/rustc shims live in
 `/opt/homebrew/opt/rustup/bin`. That dir MUST be in PATH for builds, or
 cargo falls back to brew's standalone rustc (no cross targets →
 "can't find crate for core").
@@ -25,7 +25,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 ./package.sh <path-to-extracted-zapret-bundle>      # assemble dist zip
 ```
 
-Cannot run the produced .exe on macOS — verify via `file` (should say
+Cannot run the produced .exe on macOS - verify via `file` (should say
 "PE32+ executable (GUI)") and `x86_64-w64-mingw32-objdump -h` (.rsrc section
 with manifest + icon).
 
