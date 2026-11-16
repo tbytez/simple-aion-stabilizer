@@ -100,10 +100,23 @@ impl eframe::App for App {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, pal.bg);
 
         self.paint_title_bar(ui, rect, pal);
-        let mut y = rect.min.y + TITLE_H + MARGIN;
-        y = self.paint_hero(ui, rect, y, pal);
-        y += 8.0;
-        let _ = self.paint_settings(ui, rect, y, pal);
+        // Keep the title and status strip visible while allowing the cards
+        // to scroll on a smaller monitor or a shortened window.
+        let body = Rect::from_min_max(
+            rect.min + vec2(0.0, TITLE_H),
+            rect.max - vec2(0.0, 30.0),
+        );
+        let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+        body_ui.set_clip_rect(body);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(&mut body_ui, |ui| {
+                let size = vec2(ui.available_width(), MARGIN * 2.0 + 258.0 + 8.0 + 208.0);
+                let (win, _) = ui.allocate_exact_size(size, Sense::hover());
+                let mut cards = ui.new_child(egui::UiBuilder::new().max_rect(win));
+                let y = self.paint_hero(&mut cards, win, win.min.y + MARGIN, pal);
+                self.paint_settings(&mut cards, win, y + 8.0, pal);
+            });
 
         // error/update banners are a docked bottom strip - they never
         // push the cards or squeeze the footer out of the window

@@ -69,9 +69,10 @@ fn main() {
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([380.0, 580.0])
-        .with_min_inner_size([380.0, 580.0])
-        .with_max_inner_size([380.0, 580.0])
-        .with_resizable(false)
+        // Logical dimensions: let winit resize the physical surface on DPI
+        // changes rather than constraining it to a fixed physical maximum.
+        .with_min_inner_size([380.0, 300.0])
+        .with_resizable(true)
         .with_decorations(false)
         .with_visible(!start_tray)
         .with_icon(icon);
