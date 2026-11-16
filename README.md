@@ -46,6 +46,15 @@ and the app watches for the game - it starts the engine when Aion 2 runs
 and stops it when you quit. (Watched exe names can be changed with
 `watch_process=` in `config.ini`.)
 
+## Planned
+
+- **Multi-profile support**: pick a profile in the UI (`profiles/*.txt`)
+  so the same app can run zapret strategies for other games without
+  editing files.
+- **Using it for other games**: today you can already edit `profile.txt`
+  filters and `watch_process=` in `config.ini` to target any game or app.
+  A short guide will be added.
+
 ## Safety notes
 
 - This is the same technique used by AXV Gaming Control Center and the
