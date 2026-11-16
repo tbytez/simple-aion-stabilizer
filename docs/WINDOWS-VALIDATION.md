@@ -156,3 +156,26 @@ The game watcher is detection-based, so it can start after a connection already
 began. For AXV-equivalent login validation, start the engine before Aion or use
 Start engine on app open. Test watcher timing separately rather than assuming
 it is equivalent to pre-launch startup.
+
+## v0.1.9 UI polish
+
+The user confirmed v0.1.8 works on their setup. v0.1.9 changes local UI
+drawing only: antialiased gradient rings, a centered header brand mark,
+consistent vector icons and hover/focus feedback. The network strategy,
+backend assets, engine/controller, updater, native rendering configuration,
+winit patch and packaging logic remain identical to v0.1.8. The only main.rs
+change declares the new drawing module. Existing responsive thresholds,
+scroll behavior and UI test assertions are preserved; the header retains
+its wrapping layout rather than forcing the mockup's version alignment.
+
+Independent validation passed 49 app tests and eight signing-tool tests,
+including the existing 2,432-layout matrix and input/scroll/focus tests.
+Three new drawing tests exercise ring coverage fringes and bounded geometry.
+Strict Clippy passes for host and Windows test targets. macOS screenshots
+provide visual evidence for the local drawing, not native Windows behavior.
+
+On Windows, inspect both ring edges, icon alignment and keyboard focus at
+100%, 125%, 150%, 200% and higher supported scaling in both themes. Repeat
+the already-working resize and mixed-monitor interactions to check for
+regressions. Native Windows visual/performance checks have not been run in
+the macOS environment. Tray and executable icon assets are unchanged.

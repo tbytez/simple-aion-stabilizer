@@ -2,6 +2,7 @@
 
 mod controller;
 mod core;
+mod draw;
 mod engine;
 mod manifest;
 mod procs;

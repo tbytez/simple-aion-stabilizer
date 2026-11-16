@@ -1,5 +1,75 @@
 # Project notes
 
+## Devin preferences
+
+For work assigned to Devin, always read and follow the `devin-cli` skill.
+Use SWE-2.0 with maximum reasoning instead of the skill's default model.
+Resolve the installed provider's exact model identifier before launching;
+the verified T3 Devin catalog identifies SWE-2 as `swe-2-high`, with
+`thought_level: max`. Do not silently substitute another model or provider.
+
+When the user explicitly requests bypassing permission prompts, apply the
+supported bypass mode for that Devin run. For direct CLI runs the skill
+documents `--permission-mode dangerous`; T3 uses its supported provider mode.
+Bypassing prompts does not expand the task's scope or waive the core-change
+approval rules below. Do not interpret this preference alone as a request to
+bypass every future run. If Devin is unavailable or out of quota, report the
+blocker rather than switching providers without the user's approval.
+
+## Preserve the working core — explicit approval required
+
+The user confirmed v0.1.8 works perfectly on their setup. Treat tag `v0.1.8`
+(commit `2a441bacd31dc9d5f53a9a5f1a8eaa6f188af506`) as the working baseline.
+Preserve its core behavior unless the user explicitly approves a specific
+change in advance.
+
+Protected core includes:
+
+- Network strategy, winws arguments, TCP/UDP handling, target/exclusion lists,
+  profile defaults, parsing, validation and migration (`assets/profile*.txt`,
+  `assets/lists/`, `src/profile.rs`).
+- Backend binaries, driver/pattern versions and pinned hashes
+  (`assets/backend-reference.sha256`, bundled `bin/`, packaging inputs).
+- Engine start/stop, process detection, automatic startup, controller/tray
+  commands, configuration and Windows service handling (`src/engine.rs`,
+  `src/controller.rs`, `src/procs.rs`, `src/core.rs`, `src/sys.rs` and callers).
+- Native DPI, monitor movement, window sizing and rendering behavior,
+  including the vendored winit patch (`vendor/winit/`, `src/rendering.rs`,
+  initialization in `src/main.rs`, relevant manifest/build/dependency settings).
+- Responsiveness and resize performance: responsive breakpoints, stacked versus
+  column layouts, viewport/minimum-size constraints, wrapping and overflow,
+  scrolling and scroll-offset recovery, control reachability, scaling behavior,
+  resize handling and repaint scheduling (`src/ui.rs` and related code).
+- Update verification, installation, recovery and configuration preservation
+  (`src/update.rs`, `src/update_install.rs`, `src/manifest.rs`, signing tools,
+  `assets/update-recovery.cmd`, `package.sh` and related code).
+
+These boundaries follow behavior, not just filenames. Refactors, dependency
+upgrades, optimizations and packaging changes that affect protected behavior
+also require approval. A general request to fix, improve, clean up or release
+the app does not by itself approve changing the core.
+
+The user explicitly confirmed responsiveness is working perfectly and requires
+their approval before any change to it. UI polish, icon work and circle
+smoothing must preserve existing responsive behavior and resize performance.
+Approval of a visual mockup does not authorize changing responsive rules,
+even if the mockup uses different layout thresholds. Before any proposed
+responsiveness change, follow the approval process below and identify the
+affected window sizes/scales and regression checks. Preserve the existing
+layout/input test matrix; do not weaken it to accommodate a visual change.
+
+Before changing protected behavior, investigate without changing it and
+present the evidence, exact proposed scope, expected benefit, regression
+risks and validation plan. Obtain explicit user approval for that scope before
+implementation. If scope expands, obtain approval for the additional changes.
+Read-only investigation, isolated tests that preserve production behavior,
+documentation and unrelated UI changes may proceed without core approval.
+
+Do not alter the core opportunistically or weaken/remove this approval rule
+without the user's explicit approval. Preserve the working baseline and
+record validation evidence for any approved change; cross-compilation alone
+does not verify Windows behavior or live Aion connectivity.
+
 Windows-only tray app (Rust + native-windows-gui) that wraps zapret's
 `winws.exe` with an Aion profile. Built on macOS by cross-compiling.
 

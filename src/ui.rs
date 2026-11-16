@@ -1,8 +1,9 @@
 //! Layout-driven UI. All dimensions are logical points; eframe owns the
 //! monitor scale, font atlas resolution, hit testing and physical surface.
 use crate::controller::{CheckState, Cmd, Controller, Status, UpdateState};
+use crate::draw::{self, Icon};
 use crate::theme;
-use egui::{vec2, Align2, Color32, FontFamily, FontId, Mesh, Pos2, RichText, Sense, Shape, Stroke};
+use egui::{vec2, Align2, Color32, FontFamily, FontId, Pos2, RichText, Sense, Stroke};
 use std::time::Duration;
 
 pub struct App {
@@ -55,22 +56,26 @@ impl App {
                 egui::Frame::new().inner_margin(16).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
                         let (logo, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
-                        ui.painter().circle_filled(logo.center(), 9.0, pal.accent_a);
-                        ui.painter().circle_filled(
-                            logo.center() + vec2(2.0, -2.0),
-                            5.5,
+                        draw::brand_mark(
+                            ui.painter(),
+                            logo,
+                            pal.accent_a,
                             Color32::from_rgb(34, 211, 238),
+                            pal.text,
                         );
-                        ui.painter().circle_filled(logo.center(), 3.0, pal.bg);
                         ui.label(
                             RichText::new("AION STABILIZER")
-                                .size(13.0)
+                                .size(12.5)
                                 .family(FontFamily::Name("sb".into()))
+                                .extra_letter_spacing(1.5)
                                 .color(pal.text),
                         );
                         ui.label(
-                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(pal.dim),
+                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                                .size(11.0)
+                                .color(pal.dim),
                         );
                     });
                     ui.add_space(4.0);
@@ -83,6 +88,7 @@ impl App {
                         });
                     } else {
                         self.hero(ui);
+                        ui.add_space(4.0);
                         self.settings(ui);
                     }
                     if let Some(error) = self.status.error.clone() {
@@ -130,11 +136,17 @@ impl App {
                         }
                     }
                     ui.separator();
-                    ui.label(
-                        RichText::new("Closing or minimizing keeps the app in the tray.")
-                            .size(11.0)
-                            .color(pal.dim),
-                    );
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        let (icon, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                        draw::icon(ui.painter(), Icon::Tray, icon, pal.dim);
+                        ui.label(
+                            RichText::new("Closing or minimizing keeps the app in the tray.")
+                                .size(11.0)
+                                .color(pal.dim),
+                        );
+                    });
                 });
                 // egui tracks keyboard focus independently of scrolling.
                 // Reveal a newly focused control, including controls reached
@@ -154,11 +166,38 @@ impl App {
         egui::Frame::new()
             .fill(pal.card)
             .stroke(egui::Stroke::new(1.0, pal.card_border))
-            .corner_radius(12)
+            .corner_radius(14)
             .inner_margin(16)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 contents(ui);
+            });
+    }
+
+    /// Small tracked section label shared by both cards.
+    fn eyebrow(text: &str, pal: theme::Palette) -> RichText {
+        RichText::new(text)
+            .size(10.5)
+            .family(FontFamily::Name("sb".into()))
+            .extra_letter_spacing(1.6)
+            .color(pal.dim)
+    }
+
+    /// Status pill under the power button; optional leading icon.
+    fn chip(ui: &mut egui::Ui, icon: Option<Icon>, text: &str, color: Color32) {
+        egui::Frame::new()
+            .fill(color.gamma_multiply(0.10))
+            .corner_radius(10)
+            .inner_margin(egui::Margin::symmetric(10, 5))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if let Some(kind) = icon {
+                        let (rect, _) = ui.allocate_exact_size(vec2(11.0, 11.0), Sense::hover());
+                        draw::icon(ui.painter(), kind, rect, color);
+                    }
+                    ui.label(RichText::new(text).size(11.0).color(color));
+                });
             });
     }
 
@@ -173,11 +212,7 @@ impl App {
             });
             let pal = theme::palette(ui.ctx());
             let on = Color32::from_rgb(16, 185, 129);
-            let end = if ui.ctx().theme() == egui::Theme::Light {
-                Color32::from_rgb(4, 120, 87)
-            } else {
-                Color32::from_rgb(52, 211, 153)
-            };
+            let end = draw::success(ui.ctx());
             let label = if running {
                 "Stop engine"
             } else {
@@ -186,29 +221,58 @@ impl App {
             let response = ui
                 .add_enabled_ui(!busy, |ui| {
                     let (rect, response) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 156.0), Sense::click());
+                        ui.allocate_exact_size(vec2(ui.available_width(), 166.0), Sense::click());
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
                     });
-                    let center = Pos2::new(rect.center().x, rect.top() + 54.0);
+                    let center = Pos2::new(rect.center().x, rect.top() + 67.0);
                     let painter = ui.painter();
-                    // Static glow, painted in native-resolution vectors. No idle
-                    // pulse or CPU animation loop while the engine is running.
-                    if running {
-                        for i in 0..3 {
-                            painter.circle_stroke(
-                                center,
-                                49.0 + i as f32 * 5.0,
-                                Stroke::new(7.0, on.gamma_multiply(0.10 - i as f32 * 0.025)),
-                            );
-                        }
-                    }
+                    let feather = draw::feather(ui.ctx());
                     let radius = if response.is_pointer_button_down_on() {
                         40.0
                     } else {
                         42.0
                     };
-                    gradient_ring(
+                    // Static glow, painted in native-resolution vectors. No idle
+                    // pulse or CPU animation loop while the engine is running.
+                    if running {
+                        let boost = if response.hovered() { 1.35 } else { 1.0 };
+                        for i in 0..3 {
+                            painter.circle_stroke(
+                                center,
+                                49.0 + i as f32 * 5.0,
+                                Stroke::new(
+                                    7.0,
+                                    on.gamma_multiply((0.10 - i as f32 * 0.025) * boost),
+                                ),
+                            );
+                        }
+                    } else if response.hovered() {
+                        // Restrained hover highlight: a soft accent halo.
+                        for (r, alpha) in [
+                            (radius + 9.0, 0.10),
+                            (radius + 12.5, 0.05),
+                            (radius + 16.0, 0.025),
+                        ] {
+                            painter.circle_stroke(
+                                center,
+                                r,
+                                Stroke::new(4.0, pal.accent_a.gamma_multiply(alpha)),
+                            );
+                        }
+                    }
+                    // Disc first: the ring's inner coverage fringe blends into
+                    // it, so the junction is smooth instead of a hard seam.
+                    painter.circle_filled(
+                        center,
+                        radius + feather * 0.5,
+                        if running {
+                            draw::lerp(on, pal.card, 0.88)
+                        } else {
+                            pal.card
+                        },
+                    );
+                    draw::gradient_ring(
                         painter,
                         center,
                         radius,
@@ -220,45 +284,57 @@ impl App {
                             Color32::from_rgb(34, 211, 238)
                         },
                     );
-                    painter.circle_filled(
-                        center,
-                        radius - 1.0,
-                        if running {
-                            lerp(on, pal.card, 0.88)
-                        } else {
-                            pal.bg
-                        },
-                    );
-                    power_icon(
+                    draw::icon(
                         painter,
-                        center,
-                        18.0,
+                        Icon::Power,
+                        egui::Rect::from_center_size(center, vec2(44.0, 44.0)),
                         if running || response.hovered() {
                             pal.text
                         } else {
                             pal.dim
                         },
                     );
+                    // Small tracked section label, painted like the status and
+                    // action labels below the ring.
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(
+                        "ENGINE",
+                        0.0,
+                        egui::TextFormat {
+                            font_id: FontId::new(10.5, FontFamily::Name("sb".into())),
+                            color: pal.dim,
+                            extra_letter_spacing: 1.6,
+                            ..Default::default()
+                        },
+                    );
+                    let galley = painter.layout_job(job);
+                    painter.galley(
+                        Pos2::new(
+                            rect.center().x - galley.size().x / 2.0,
+                            rect.top() + 11.0 - galley.size().y / 2.0,
+                        ),
+                        galley,
+                        pal.dim,
+                    );
                     painter.text(
-                        Pos2::new(rect.center().x, rect.top() + 114.0),
+                        Pos2::new(rect.center().x, rect.top() + 127.0),
                         Align2::CENTER_CENTER,
                         if running { "RUNNING" } else { "STOPPED" },
                         FontId::new(19.0, FontFamily::Name("sb".into())),
                         if running { end } else { pal.text },
                     );
                     painter.text(
-                        Pos2::new(rect.center().x, rect.top() + 140.0),
+                        Pos2::new(rect.center().x, rect.top() + 148.0),
                         Align2::CENTER_CENTER,
                         label,
-                        FontId::proportional(13.0),
+                        FontId::proportional(12.5),
                         pal.dim,
                     );
                     if response.has_focus() {
-                        painter.rect_stroke(
-                            rect.shrink(2.0),
-                            12,
-                            Stroke::new(1.5, pal.accent_a),
-                            egui::StrokeKind::Inside,
+                        painter.circle_stroke(
+                            center,
+                            radius + 10.5,
+                            Stroke::new(1.8, pal.accent_a),
                         );
                     }
                     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -271,6 +347,7 @@ impl App {
                     Cmd::Start { auto: false }
                 });
             }
+            ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 let game = if !self.status.watch {
                     "Detection off"
@@ -279,32 +356,26 @@ impl App {
                 } else {
                     "Waiting for Aion"
                 };
-                for (text, color) in [
-                    (
-                        game,
-                        if self.status.game_present {
-                            end
-                        } else {
-                            pal.dim
-                        },
-                    ),
-                    (
-                        if self.status.auto_started && running {
-                            "AUTO"
-                        } else {
-                            "MANUAL"
-                        },
-                        pal.accent_a,
-                    ),
-                ] {
-                    egui::Frame::new()
-                        .fill(color.gamma_multiply(0.10))
-                        .corner_radius(12)
-                        .inner_margin(egui::Margin::symmetric(10, 5))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(text).size(11.0).color(color));
-                        });
-                }
+                Self::chip(
+                    ui,
+                    Some(Icon::Game),
+                    game,
+                    if self.status.game_present {
+                        end
+                    } else {
+                        pal.dim
+                    },
+                );
+                Self::chip(
+                    ui,
+                    None,
+                    if self.status.auto_started && running {
+                        "AUTO"
+                    } else {
+                        "MANUAL"
+                    },
+                    pal.accent_a,
+                );
             });
             ui.collapsing(RichText::new("Connection help").size(12.0).color(pal.dim), |ui| {
                 ui.label("Start the engine before opening Aion, or enable Start engine on app open. Game detection starts only after the game opens. The default follows AXV’s compatibility rules with targeted game TCP. Broad game UDP injection is disabled. If login fails, stop the engine and retry. A running engine does not confirm game connectivity.");
@@ -312,13 +383,15 @@ impl App {
         });
     }
 
-    fn setting(ui: &mut egui::Ui, title: &str, subtitle: &str, value: &mut bool) -> bool {
+    fn setting(ui: &mut egui::Ui, icon: Icon, title: &str, subtitle: &str, value: &mut bool) -> bool {
         let pal = theme::palette(ui.ctx());
         let row = ui.allocate_ui_with_layout(
             vec2(ui.available_width(), 0.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                let text_width = (ui.available_width() - 56.0).max(80.0);
+                let (icon_rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                ui.add_space(10.0);
+                let text_width = (ui.available_width() - 54.0).max(80.0);
                 ui.allocate_ui_with_layout(
                     vec2(text_width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
@@ -336,24 +409,11 @@ impl App {
                         }
                     },
                 );
-                let (rect, _) = ui.allocate_exact_size(vec2(44.0, 32.0), Sense::hover());
-                let track = egui::Rect::from_center_size(rect.center(), vec2(38.0, 22.0));
-                ui.painter()
-                    .rect_filled(track, 11, if *value { pal.accent_a } else { pal.off_a });
-                ui.painter().circle_filled(
-                    Pos2::new(
-                        if *value {
-                            track.right() - 11.0
-                        } else {
-                            track.left() + 11.0
-                        },
-                        track.center().y,
-                    ),
-                    8.0,
-                    Color32::WHITE,
-                );
+                let (switch_rect, _) = ui.allocate_exact_size(vec2(44.0, 32.0), Sense::hover());
+                (icon_rect, switch_rect)
             },
         );
+        let (icon_rect, switch_rect) = row.inner;
         let mut response = ui.interact(
             row.response.rect,
             ui.make_persistent_id(title),
@@ -362,17 +422,48 @@ impl App {
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *value, title)
         });
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                response.rect.expand(2.0),
-                6,
-                Stroke::new(1.5, pal.accent_a),
-                egui::StrokeKind::Inside,
-            );
-        }
         if response.clicked() {
             *value = !*value;
             response.mark_changed();
+        }
+        // Paint after interaction so the visuals can answer hover and focus.
+        let painter = ui.painter();
+        draw::icon(
+            painter,
+            icon,
+            icon_rect,
+            if response.hovered() { pal.text } else { pal.dim },
+        );
+        let track = egui::Rect::from_center_size(switch_rect.center(), vec2(36.0, 20.0));
+        let track_col = if *value { pal.accent_a } else { pal.off_a };
+        painter.rect_filled(
+            track,
+            10,
+            if response.hovered() {
+                draw::lerp(track_col, pal.text, 0.08)
+            } else {
+                track_col
+            },
+        );
+        painter.circle_filled(
+            Pos2::new(
+                if *value {
+                    track.right() - 10.0
+                } else {
+                    track.left() + 10.0
+                },
+                track.center().y,
+            ),
+            7.0,
+            if *value { Color32::WHITE } else { pal.dim },
+        );
+        if response.has_focus() {
+            painter.rect_stroke(
+                response.rect.expand(2.0),
+                8,
+                Stroke::new(1.5, pal.accent_a),
+                egui::StrokeKind::Inside,
+            );
         }
         response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -382,15 +473,12 @@ impl App {
     fn settings(&mut self, ui: &mut egui::Ui) {
         Self::card(ui, |ui| {
             let pal = theme::palette(ui.ctx());
-            ui.label(
-                RichText::new("SETTINGS")
-                    .size(11.0)
-                    .family(FontFamily::Name("sb".into()))
-                    .color(pal.dim),
-            );
+            ui.label(Self::eyebrow("SETTINGS", pal));
+            ui.add_space(6.0);
             let mut watch = self.status.watch;
             if Self::setting(
                 ui,
+                Icon::Game,
                 "Auto-start with Aion",
                 "Start and stop with the game",
                 &mut watch,
@@ -401,6 +489,7 @@ impl App {
             let mut startup = self.status.startup_engine;
             if Self::setting(
                 ui,
+                Icon::Power,
                 "Start engine on app open",
                 "Turn on when this app opens",
                 &mut startup,
@@ -411,6 +500,7 @@ impl App {
             let mut autostart = self.status.autostart;
             if Self::setting(
                 ui,
+                Icon::Window,
                 "Launch with Windows",
                 "Start in the tray on login",
                 &mut autostart,
@@ -418,17 +508,30 @@ impl App {
                 self.ctrl.send(Cmd::SetAutostart(autostart));
             }
             ui.separator();
+            ui.add_space(3.0);
             let checking = matches!(self.status.check, CheckState::Checking);
-            ui.label(
-                RichText::new(match self.status.check {
-                    CheckState::Checking => "Checking for updates…",
-                    CheckState::UpToDate => "Latest version installed.",
-                    CheckState::Failed => "Update check failed. Try again.",
-                    CheckState::Idle => "Updates are checked on startup.",
-                })
-                .size(11.0)
-                .color(pal.dim),
-            );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 7.0;
+                let (kind, tint) = match self.status.check {
+                    CheckState::Checking => (Icon::Update, pal.dim),
+                    CheckState::UpToDate => (Icon::Check, draw::success(ui.ctx())),
+                    CheckState::Failed => (Icon::Update, pal.danger),
+                    CheckState::Idle => (Icon::Update, pal.dim),
+                };
+                let (rect, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                draw::icon(ui.painter(), kind, rect, tint);
+                ui.label(
+                    RichText::new(match self.status.check {
+                        CheckState::Checking => "Checking for updates…",
+                        CheckState::UpToDate => "Latest version installed.",
+                        CheckState::Failed => "Update check failed. Try again.",
+                        CheckState::Idle => "Updates are checked on startup.",
+                    })
+                    .size(11.0)
+                    .color(pal.dim),
+                );
+            });
+            ui.add_space(3.0);
             let button = egui::Button::new(
                 RichText::new("Check for updates")
                     .size(12.0)
@@ -502,68 +605,6 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.ctrl.send(Cmd::Shutdown);
     }
-}
-
-// ---------------- paint helpers ----------------
-
-fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
-    Color32::from_rgb(
-        (a.r() as f32 + (b.r() as f32 - a.r() as f32) * t) as u8,
-        (a.g() as f32 + (b.g() as f32 - a.g() as f32) * t) as u8,
-        (a.b() as f32 + (b.b() as f32 - a.b() as f32) * t) as u8,
-    )
-}
-
-/// Ring mesh with a gradient from `a` to `b` around the circle.
-fn gradient_ring(
-    painter: &egui::Painter,
-    center: Pos2,
-    inner_r: f32,
-    outer_r: f32,
-    a: Color32,
-    b: Color32,
-) {
-    const N: usize = 72;
-    let mut mesh = Mesh::default();
-    for i in 0..=N {
-        let f = i as f32 / N as f32;
-        let ang = f * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        let dir = vec2(ang.cos(), ang.sin());
-        let col = lerp(a, b, 0.5 + 0.5 * (f * std::f32::consts::TAU).cos());
-        mesh.colored_vertex(center + dir * outer_r, col);
-        mesh.colored_vertex(center + dir * inner_r, col);
-    }
-    for i in 0..N {
-        let o = (i * 2) as u32;
-        mesh.add_triangle(o, o + 1, o + 2);
-        mesh.add_triangle(o + 1, o + 3, o + 2);
-    }
-    painter.add(Shape::mesh(mesh));
-}
-
-/// Classic power symbol: arc with a gap at top + vertical stroke.
-fn power_icon(painter: &egui::Painter, center: Pos2, r: f32, col: Color32) {
-    let w = r * 0.22;
-    // arc: gap at top, spans 300deg around the bottom
-    let mut pts = Vec::with_capacity(64);
-    let start = 120.0f32.to_radians();
-    let end = 420.0f32.to_radians();
-    for i in 0..64 {
-        let a = start + (end - start) * (i as f32 / 63.0);
-        pts.push(center + vec2(a.cos() * r, -a.sin() * r));
-    }
-    painter.add(Shape::line(pts.clone(), Stroke::new(w, col)));
-    if let (Some(f), Some(l)) = (pts.first(), pts.last()) {
-        painter.circle_filled(*f, w / 2.0, col);
-        painter.circle_filled(*l, w / 2.0, col);
-    }
-    // vertical stroke from top center downward
-    let top = center + vec2(0.0, -r * 1.15);
-    let bot = center + vec2(0.0, -r * 0.1);
-    painter.line_segment([top, bot], Stroke::new(w, col));
-    painter.circle_filled(top, w / 2.0, col);
-    painter.circle_filled(bot, w / 2.0, col);
 }
 
 #[cfg(test)]
