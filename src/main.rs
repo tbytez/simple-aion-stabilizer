@@ -5,6 +5,8 @@ mod core;
 mod engine;
 mod manifest;
 mod procs;
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+mod profile;
 mod rendering;
 #[cfg(windows)]
 mod sys;
@@ -68,12 +70,12 @@ fn main() {
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
-        .with_inner_size([380.0, 580.0])
-        // Logical dimensions: let winit resize the physical surface on DPI
-        // changes rather than constraining it to a fixed physical maximum.
-        .with_min_inner_size([380.0, 300.0])
+        .with_inner_size([460.0, 680.0])
+        // Do not force a logical minimum larger than a small high-DPI
+        // display. The UI scrolls in both axes below its normal layout width.
+        .with_clamp_size_to_monitor_size(true)
         .with_resizable(true)
-        .with_decorations(false)
+        .with_decorations(true)
         .with_visible(!start_tray)
         .with_icon(icon);
 
@@ -127,7 +129,7 @@ fn main() {
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-            let message: Vec<u16> = format!("Unable to start {TITLE}: {error}\n\nWindows 10 or newer with Microsoft WARP support is required.")
+            let message: Vec<u16> = format!("Unable to start {TITLE}: {error}\n\nWindows 10 or newer with DirectX 12 support is required.")
                 .encode_utf16().chain(Some(0)).collect();
             let title: Vec<u16> = TITLE.encode_utf16().chain(Some(0)).collect();
             unsafe {

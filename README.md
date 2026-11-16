@@ -4,20 +4,19 @@ A tiny Windows app that helps Aion connect when your internet provider blocks it
 
 ## What it actually does
 
-Your ISP can look inside your traffic (this is called DPI - Deep Packet
-Inspection) and cut the connection when it recognizes Aion. This app stops
-that by changing **how** your packets look on the wire - split, shuffled,
-or padded with throwaway packets - so the ISP's filter can't recognize them,
-while the Aion server still understands them perfectly.
+The app runs zapret's `winws` engine through the WinDivert network driver.
+The default profile splits HTTP/TLS packets only for domains in
+`lists/list-aion.txt`. It leaves UDP and unknown game protocols untouched.
+It does not improve every connection: the correct strategy depends on the
+provider, region, and cause of the connection failure. A running engine
+only means the process is alive, not that Aion login succeeded.
 
-Concretely, it runs two well-known open-source tools locally on your PC:
-
-* **winws (zapret)**: a small engine that rewrites your outgoing packets
-  on the fly using DPI-evasion tricks (packet splitting, decoy packets,
-  fake handshakes).
-* **WinDivert**: a legit Windows driver that lets programs edit packets
-  in-flight. It only runs while the engine is on; press **Stop** and the
-  driver unloads immediately.
+The earlier bundled profile intercepted nearly all high TCP/UDP ports and
+injected fake packets into unknown protocols. That could disrupt login or
+other applications. On first engine start, known copies of that old profile
+are backed up to `profile.pre-domain-scope.txt` and replaced with the scoped
+profile. Custom profiles are preserved; review them if login still fails.
+The app no longer changes Windows' global TCP timestamp setting.
 
 ## What it does NOT do
 
@@ -33,8 +32,13 @@ Concretely, it runs two well-known open-source tools locally on your PC:
 
 ## Use it
 
-Requires Windows 10 or newer. The UI uses Microsoft WARP (CPU rendering)
-instead of the game GPU to avoid NVIDIA OpenGL overlay detection.
+Requires Windows 10 or newer with DirectX 12 support. The UI prefers an
+integrated GPU, then other compatible hardware, with Microsoft WARP as a
+software fallback. It does not use OpenGL. To force the software fallback
+for troubleshooting, set `AION_SOFTWARE_RENDERING=1` before starting the app.
+
+Windows manages window resizing and monitor DPI changes. The interface
+wraps and scrolls in smaller windows and uses two columns in wide windows.
 
 1. Download the zip from [Releases](../../releases), extract it.
 2. Run `AionStabilizer.exe` (admin rights - needed for the driver).
@@ -81,8 +85,11 @@ an Authenticode publisher certificate or antivirus clearance.
 
 ## Safety notes
 
-- This is the same technique used by AXV Gaming Control Center and the
-  large zapret community, tuned down to just Aion.
+- If login fails, stop the engine and retry. Stop holds even with game
+  auto-start enabled until the watcher observes that the game has exited.
+- Engine startup and driver messages are saved in `engine.log` beside the
+  app (replaced each start). Include the log, region, provider, and whether
+  login works with the engine stopped when reporting a connection issue.
 - No tool can promise zero ban risk. Stop the engine when not playing.
 - If it doesn't work for your ISP, edit `profile.txt` and
   `lists\list-aion.txt` (plain text files).

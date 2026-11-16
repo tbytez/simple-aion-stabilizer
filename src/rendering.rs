@@ -1,4 +1,4 @@
-//! Keep the Windows utility off the game GPU and its OpenGL overlay hooks.
+//! DirectX rendering with an integrated-GPU preference and WARP fallback.
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     #[allow(unused_mut)]
@@ -17,19 +17,26 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
             .backend_options
             .dx12
             .shader_compiler = wgpu::Dx12Compiler::Fxc;
-        // DX12 exposes Microsoft's WARP CPU adapter. Never silently fall back
-        // to the NVIDIA/AMD device: that would reintroduce game overlay hooks.
-        setup.native_adapter_selector = Some(Arc::new(|adapters, surface| {
+        // Prefer the integrated GPU to reduce competition with the game.
+        // Keep WARP available on machines without a compatible GPU.
+        // AION_SOFTWARE_RENDERING=1 explicitly selects WARP for troubleshooting.
+        let software = std::env::var_os("AION_SOFTWARE_RENDERING").is_some();
+        setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
             adapters
                 .iter()
-                .find(|adapter| {
-                    adapter.get_info().device_type == wgpu::DeviceType::Cpu
-                        && surface.is_none_or(|s| adapter.is_surface_supported(s))
+                .filter(|adapter| surface.is_none_or(|s| adapter.is_surface_supported(s)))
+                .filter(|adapter| {
+                    !software || adapter.get_info().device_type == wgpu::DeviceType::Cpu
+                })
+                .min_by_key(|adapter| match adapter.get_info().device_type {
+                    wgpu::DeviceType::IntegratedGpu => 0,
+                    wgpu::DeviceType::DiscreteGpu => 1,
+                    wgpu::DeviceType::VirtualGpu => 2,
+                    wgpu::DeviceType::Other => 3,
+                    wgpu::DeviceType::Cpu => 4,
                 })
                 .cloned()
-                .ok_or_else(|| {
-                    "Microsoft WARP renderer unavailable (Windows 10 or newer required)".into()
-                })
+                .ok_or_else(|| "No compatible DirectX 12 renderer available".into())
         }));
         config.wgpu_setup = WgpuSetup::CreateNew(setup);
     }

@@ -77,17 +77,16 @@ impl Engine {
             return Err("profile.txt contains no arguments".to_string());
         }
 
-        // Some desync modes need TCP timestamps enabled system-wide (same
-        // thing the zapret service scripts do). Harmless standard TCP option.
-        // Invoke by absolute System32 path so a hostile PATH cannot
-        // substitute a fake netsh.
-        let _ = Command::new(crate::sys::system_tool("netsh.exe"))
-            .args(["interface", "tcp", "set", "global", "timestamps=enabled"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
+        // Keep the engine's own startup/driver errors available instead of
+        // discarding them with the hidden console.
+        let log = std::fs::File::create(app_dir.join("engine.log"))
+            .map_err(|e| format!("Cannot create engine.log: {e}"))?;
+        let stderr = log.try_clone().map_err(|e| format!("Cannot open engine log: {e}"))?;
 
         let child = Command::new(&winws)
             .args(&args)
+            .stdout(log)
+            .stderr(stderr)
             .current_dir(app_dir)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
@@ -145,22 +144,12 @@ impl Engine {
 /// profile when the file is missing.
 #[cfg(windows)]
 fn load_profile(app_dir: &Path) -> Result<Vec<String>, String> {
-    let profile_path = app_dir.join("profile.txt");
-    if !profile_path.is_file() {
-        std::fs::write(&profile_path, DEFAULT_PROFILE)
-            .map_err(|e| format!("Cannot write profile.txt: {e}"))?;
-    }
-
-    let text = std::fs::read_to_string(&profile_path)
-        .map_err(|e| format!("Cannot read profile.txt: {e}"))?;
+    let text = crate::profile::load(app_dir)?;
 
     let bin = format!("{}\\", app_dir.join("bin").display());
     let lists = format!("{}\\", app_dir.join("lists").display());
     Ok(core::parse_profile_args(&text, &bin, &lists))
 }
-
-#[cfg(windows)]
-const DEFAULT_PROFILE: &str = include_str!("../assets/profile.txt");
 
 #[cfg(all(test, not(windows)))]
 mod tests {

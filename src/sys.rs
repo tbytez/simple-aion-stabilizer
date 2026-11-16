@@ -17,7 +17,7 @@ use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Services::*;
-use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
+use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -40,28 +40,6 @@ fn wide_path(p: &std::path::Path) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
-}
-
-// ---------------- trusted system paths ----------------
-
-/// Absolute path of the Windows system directory (e.g. C:\Windows\System32)
-/// via the OS API - never PATH- or environment-derived.
-pub fn system_dir() -> PathBuf {
-    let mut buf = [0u16; 260];
-    unsafe {
-        let n = GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32);
-        if n > 0 && (n as usize) < buf.len() {
-            return PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]));
-        }
-    }
-    PathBuf::from(r"C:\Windows\System32")
-}
-
-/// Absolute path of a tool living in the Windows system directory
-/// (netsh.exe, sc.exe, ...). Use instead of a bare name so a hostile
-/// PATH cannot redirect the call.
-pub fn system_tool(exe: &str) -> PathBuf {
-    system_dir().join(exe)
 }
 
 /// Machine temp dir (e.g. C:\Windows\Temp). Its default ACL only allows

@@ -1,29 +1,16 @@
-//! Custom-painted egui UI: frameless window, glowing power button, toggle
-//! switches, dark/light palettes following the Windows theme.
-
-use crate::controller::{CheckState, Cmd, Controller, Status, UpdateInfo, UpdateState};
-use crate::theme::{self, Palette};
-use egui::{
-    vec2, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Mesh, Pos2, Rect,
-    Sense, Shape, Stroke, StrokeKind,
-};
-use std::time::{Duration, Instant};
-
-const TITLE_H: f32 = 48.0;
-const MARGIN: f32 = 16.0;
+//! Layout-driven UI. All dimensions are logical points; eframe owns the
+//! monitor scale, font atlas resolution, hit testing and physical surface.
+use crate::controller::{CheckState, Cmd, Controller, Status, UpdateState};
+use crate::theme;
+use egui::{vec2, RichText};
+use std::time::Duration;
 
 pub struct App {
     ctrl: Controller,
     status: Status,
     dismissed_error: Option<String>,
-    frame: u32,
-    start: Instant,
-    /// Last observed real visibility (IsWindowVisible), for re-syncing
-    /// winit's cached window flags after external ShowWindow calls.
     #[cfg(windows)]
     was_visible: bool,
-    #[cfg(not(windows))]
-    shot: Option<String>,
 }
 
 impl App {
@@ -32,101 +19,255 @@ impl App {
             ctrl,
             status: Status::default(),
             dismissed_error: None,
-            frame: 0,
-            start: Instant::now(),
             #[cfg(windows)]
             was_visible: false,
-            #[cfg(not(windows))]
-            shot: std::env::var("AION_SHOT").ok(),
         }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) {
+        let pal = theme::palette(ui.ctx());
+        ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+        // Reserve scrollbar space so it cannot intercept clicks on controls
+        // underneath, especially on tiny high-DPI viewports.
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        // Very high scaling on a small display can leave fewer than 300
+        // logical points. Keep controls usable by scrolling horizontally
+        // only in that case, instead of forcing a window wider than the screen.
+        let narrow = ui.available_width() < 300.0;
+        let mut scroll = egui::ScrollArea::new([narrow, true]);
+        if !narrow {
+            // Disabling an axis alone retains its previous offset for one
+            // frame. Clear it immediately when returning to a normal width.
+            scroll = scroll.horizontal_scroll_offset(0.0);
+        }
+        scroll
+            .id_salt("dashboard")
+            .min_scrolled_width(0.0)
+            .min_scrolled_height(0.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width().max(300.0));
+                egui::Frame::new().inner_margin(16).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.heading("Aion Stabilizer");
+                        ui.label(
+                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(pal.dim),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    // Wider windows use the extra space, while narrow windows
+                    // stack the cards. Text wraps at the actual available width.
+                    if ui.available_width() >= 760.0 {
+                        ui.columns(2, |cols| {
+                            self.hero(&mut cols[0]);
+                            self.settings(&mut cols[1]);
+                        });
+                    } else {
+                        self.hero(ui);
+                        self.settings(ui);
+                    }
+                    if let Some(error) = self.status.error.clone() {
+                        if self.dismissed_error.as_ref() != Some(&error) {
+                            egui::Frame::new()
+                                .fill(pal.danger_bg)
+                                .inner_margin(12)
+                                .corner_radius(8)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.colored_label(pal.danger, &error);
+                                    ui.label(
+                                        "Engine details are saved in engine.log beside the app.",
+                                    );
+                                    if ui.button("Dismiss").clicked() {
+                                        self.dismissed_error = Some(error);
+                                    }
+                                });
+                        }
+                    }
+                    if let Some(update) = self.status.update.clone() {
+                        ui.separator();
+                        match update.state {
+                            UpdateState::Available => {
+                                ui.label(format!("Version {} is available.", update.version));
+                                if ui.button("Install update").clicked() {
+                                    self.ctrl.send(Cmd::ApplyUpdate);
+                                }
+                            }
+                            UpdateState::Downloading(p) => {
+                                ui.label(format!("Downloading update… {p}%"));
+                            }
+                            UpdateState::Verifying => {
+                                ui.label("Verifying update…");
+                            }
+                            UpdateState::Installing => {
+                                ui.label("Installing update. The app will restart.");
+                            }
+                            UpdateState::Failed(error) => {
+                                ui.colored_label(pal.danger, format!("Update failed: {error}"));
+                                if ui.button("Retry update").clicked() {
+                                    self.ctrl.send(Cmd::ApplyUpdate);
+                                }
+                            }
+                        }
+                    }
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Closing or minimizing keeps the app in the tray.")
+                            .color(pal.dim),
+                    );
+                });
+                // egui tracks keyboard focus independently of scrolling.
+                // Reveal a newly focused control, including controls reached
+                // by Tab while they were below or beside the viewport.
+                if let Some(id) = ui.ctx().memory(|m| m.focused()) {
+                    if let Some(response) = ui.ctx().read_response(id) {
+                        if response.gained_focus() {
+                            response.scroll_to_me(None);
+                        }
+                    }
+                }
+            });
+    }
+
+    fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+        let pal = theme::palette(ui.ctx());
+        egui::Frame::new()
+            .fill(pal.card)
+            .stroke(egui::Stroke::new(1.0, pal.card_border))
+            .corner_radius(12)
+            .inner_margin(16)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                contents(ui);
+            });
+    }
+
+    fn hero(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            let running = self.status.running;
+            let busy = self.status.update.as_ref().is_some_and(|u| {
+                matches!(
+                    u.state,
+                    UpdateState::Downloading(_) | UpdateState::Verifying | UpdateState::Installing
+                )
+            });
+            let pal = theme::palette(ui.ctx());
+            ui.heading(if running {
+                "Engine running"
+            } else {
+                "Engine stopped"
+            });
+            ui.label(if running {
+                "Aion web connections use your selected profile."
+            } else {
+                "Traffic passes through normally."
+            });
+            ui.add_space(8.0);
+            let button = egui::Button::new(
+                RichText::new(if running {
+                    "Stop engine"
+                } else {
+                    "Start engine"
+                })
+                .size(18.0)
+                .color(egui::Color32::WHITE),
+            )
+            .fill(if running { pal.off_a } else { pal.accent_a });
+            if ui
+                .add_enabled_ui(!busy, |ui| {
+                    ui.add_sized([ui.available_width(), 52.0], button)
+                })
+                .inner
+                .clicked()
+            {
+                self.ctrl.send(if running {
+                    Cmd::Stop { manual: true }
+                } else {
+                    Cmd::Start { auto: false }
+                });
+            }
+            ui.label(if !self.status.watch {
+                "Game detection is off."
+            } else if self.status.game_present {
+                "Aion detected."
+            } else {
+                "Waiting for Aion."
+            });
+            if self.status.auto_started && running {
+                ui.label("Started automatically.");
+            }
+            ui.separator();
+            ui.label("If login fails, stop the engine and retry login to compare. A running engine does not confirm game connectivity.");
+        });
+    }
+
+    fn settings(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            ui.heading("Settings");
+            let mut watch = self.status.watch;
+            if ui.checkbox(&mut watch, "Auto-start with Aion").changed() {
+                self.ctrl.send(Cmd::SetWatch(watch));
+            }
+            ui.label("Start when the game opens; stop when it exits.");
+            ui.separator();
+            let mut startup = self.status.startup_engine;
+            if ui
+                .checkbox(&mut startup, "Start engine on app open")
+                .changed()
+            {
+                self.ctrl.send(Cmd::SetStartupEngine(startup));
+            }
+            let mut autostart = self.status.autostart;
+            if ui.checkbox(&mut autostart, "Launch with Windows").changed() {
+                self.ctrl.send(Cmd::SetAutostart(autostart));
+            }
+            ui.separator();
+            let checking = matches!(self.status.check, CheckState::Checking);
+            ui.label(match self.status.check {
+                CheckState::Checking => "Checking for updates…",
+                CheckState::UpToDate => "Latest version installed.",
+                CheckState::Failed => "Update check failed. Try again.",
+                CheckState::Idle => "Updates are checked on startup.",
+            });
+            if ui
+                .add_enabled(!checking, egui::Button::new("Check for updates"))
+                .clicked()
+            {
+                self.ctrl.send(Cmd::CheckUpdate);
+            }
+        });
     }
 }
 
 impl eframe::App for App {
-    /// Called before each ui() and also while the window is hidden (when a
-    /// repaint was requested). All non-painting logic lives here.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.status = self.ctrl.status();
-        self.frame = self.frame.wrapping_add(1);
-
-        // The tray thread and second-instance launches re-show the window
-        // with raw ShowWindow, which winit's cached VISIBLE flag never sees;
-        // ViewportCommand::Visible only reaches ShowWindow when it changes
-        // that cache, so after an external re-show the next hide is silently
-        // dropped. Detect the re-show and force the cache back in sync.
         #[cfg(windows)]
         {
-            let now_visible = crate::sys::main_window_visible();
-            if now_visible && !self.was_visible {
+            let visible = crate::sys::main_window_visible();
+            if visible && !self.was_visible {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             }
-            self.was_visible = now_visible;
+            self.was_visible = visible;
         }
-
-        // close / minimize -> hide to tray
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         if ctx.input(|i| i.viewport().minimized) == Some(true) {
+            // Clear winit's minimized state before hiding so tray restore
+            // doesn't immediately re-hide the window on the next frame.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
-
-        // Keep a slow visibility check for external tray ShowWindow calls.
-        // Hidden windows have no animation work to do.
-        #[cfg(windows)]
-        let visible = self.was_visible;
-        #[cfg(not(windows))]
-        let visible = true;
-        ctx.request_repaint_after(if !visible {
-            Duration::from_secs(1)
-        } else if self.status.running {
-            Duration::from_millis(40)
-        } else {
-            Duration::from_millis(900)
-        });
-
-        #[cfg(not(windows))]
-        self.preview_hooks(ctx);
+        // No continuous animation, especially on software fallback. Controller
+        // changes wake the UI immediately; this only detects external ShowWindow.
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        #[cfg(windows)]
-        if !self.was_visible {
-            return;
-        }
-        let pal = theme::palette(ui.ctx());
-        let rect = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, pal.bg);
-
-        self.paint_title_bar(ui, rect, pal);
-        // Keep the title and status strip visible while allowing the cards
-        // to scroll on a smaller monitor or a shortened window.
-        let body = Rect::from_min_max(
-            rect.min + vec2(0.0, TITLE_H),
-            rect.max - vec2(0.0, 30.0),
-        );
-        let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
-        body_ui.set_clip_rect(body);
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(&mut body_ui, |ui| {
-                let size = vec2(ui.available_width(), MARGIN * 2.0 + 258.0 + 8.0 + 208.0);
-                let (win, _) = ui.allocate_exact_size(size, Sense::hover());
-                let mut cards = ui.new_child(egui::UiBuilder::new().max_rect(win));
-                let y = self.paint_hero(&mut cards, win, win.min.y + MARGIN, pal);
-                self.paint_settings(&mut cards, win, y + 8.0, pal);
-            });
-
-        // error/update banners are a docked bottom strip - they never
-        // push the cards or squeeze the footer out of the window
-        if let Some(err) = self.visible_error() {
-            self.paint_error_strip(ui, rect, err.to_string(), pal);
-        } else if let Some(upd) = self.status.update.clone() {
-            self.paint_update_strip(ui, rect, &upd, pal);
-        } else {
-            self.paint_footer(ui, rect, pal);
-        }
+        self.show(ui);
     }
 
     fn on_exit(&mut self) {
@@ -134,668 +275,351 @@ impl eframe::App for App {
     }
 }
 
-impl App {
-    fn visible_error(&self) -> Option<&str> {
-        match (&self.status.error, &self.dismissed_error) {
-            (Some(e), Some(d)) if e == d => None,
-            (Some(e), _) => Some(e.as_str()),
-            _ => None,
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller::UpdateInfo;
+    use egui::{Event, Pos2, Rect, Shape, Vec2};
+    use std::sync::mpsc::Receiver;
+
+    // Standard Windows scales, custom fractional scales and stress cases.
+    const SCALES: &[f32] = &[
+        1.0, 1.1, 1.25, 1.37, 1.5, 1.75, 1.875, 2.0, 2.25, 2.5, 2.625, 3.0, 3.5, 4.0, 4.5, 4.75,
+        5.0, 6.0, 8.0,
+    ];
+
+    struct Harness {
+        ctx: egui::Context,
+        app: App,
+        commands: Receiver<Cmd>,
+        time: f64,
+        text: Vec<(String, Rect)>,
     }
 
-    // ---------------- title bar ----------------
-
-    fn paint_title_bar(&self, ui: &mut egui::Ui, rect: Rect, pal: Palette) {
-        let ctx = ui.ctx().clone();
-        let bar = Rect::from_min_size(rect.min, vec2(rect.width(), TITLE_H));
-        ui.painter().rect_filled(bar, CornerRadius::ZERO, pal.title_bar);
-        ui.painter().line_segment(
-            [bar.left_bottom(), bar.right_bottom()],
-            Stroke::new(1.0, pal.card_border),
-        );
-
-        // drag anywhere on the bar
-        let drag = ui.interact(bar, ui.scope_id().with("drag"), Sense::drag());
-        if drag.drag_started() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-
-        // logo dot + name
-        let c = bar.left_center() + vec2(18.0, 0.0);
-        let p = ui.painter();
-        p.circle_filled(c, 9.0, pal.accent_a);
-        p.circle_filled(c + vec2(2.0, -2.0), 5.5, pal.accent_b);
-        p.circle_filled(c, 3.0, pal.bg);
-        p.text(
-            c + vec2(16.0, 0.0),
-            Align2::LEFT_CENTER,
-            "AION STABILIZER",
-            FontId::new(11.5, FontFamily::Name("sb".into())),
-            pal.dim,
-        );
-
-        // version, right-aligned ahead of the window buttons
-        p.text(
-            Pos2::new(bar.max.x - 84.0 - 10.0, bar.center().y),
-            Align2::RIGHT_CENTER,
-            concat!("v", env!("CARGO_PKG_VERSION")),
-            FontId::new(10.0, FontFamily::Proportional),
-            pal.dim.gamma_multiply(0.8),
-        );
-
-        // window buttons (both hide to tray: "-" and "x")
-        let btn_w = 42.0;
-        let close = Rect::from_min_size(
-            Pos2::new(bar.max.x - btn_w, bar.min.y),
-            vec2(btn_w, TITLE_H),
-        );
-        let min = Rect::from_min_size(
-            Pos2::new(bar.max.x - btn_w * 2.0, bar.min.y),
-            vec2(btn_w, TITLE_H),
-        );
-
-        let r_close = ui.interact(close, ui.scope_id().with("close"), Sense::click());
-        let r_min = ui.interact(min, ui.scope_id().with("min"), Sense::click());
-        for (r, is_close) in [(&r_close, true), (&r_min, false)] {
-            if r.hovered() {
-                let col = if is_close {
-                    Color32::from_rgb(196, 43, 43)
-                } else {
-                    pal.btn_hover
-                };
-                ui.painter().rect_filled(r.rect, CornerRadius::ZERO, col);
-            }
-        }
-        // glyphs
-        let mc = min.center();
-        ui.painter().line_segment(
-            [mc + vec2(-5.0, 0.0), mc + vec2(5.0, 0.0)],
-            Stroke::new(1.6, if r_min.hovered() { pal.text } else { pal.dim }),
-        );
-        let cc = close.center();
-        let c_col = if r_close.hovered() {
-            Color32::WHITE
-        } else {
-            pal.dim
-        };
-        ui.painter().line_segment(
-            [cc + vec2(-4.5, -4.5), cc + vec2(4.5, 4.5)],
-            Stroke::new(1.6, c_col),
-        );
-        ui.painter().line_segment(
-            [cc + vec2(4.5, -4.5), cc + vec2(-4.5, 4.5)],
-            Stroke::new(1.6, c_col),
-        );
-        if r_min.clicked() || r_close.clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
-    }
-
-    // ---------------- hero card ----------------
-
-    fn paint_hero(&mut self, ui: &mut egui::Ui, win: Rect, y: f32, pal: Palette) -> f32 {
-        let ctx = ui.ctx().clone();
-        let card = Rect::from_min_size(
-            Pos2::new(win.min.x + MARGIN, y),
-            vec2(win.width() - 2.0 * MARGIN, 258.0),
-        );
-        ui.painter()
-            .rect_filled(card, CornerRadius::same(16), pal.card);
-        ui.painter().rect_stroke(
-            card,
-            CornerRadius::same(16),
-            Stroke::new(1.0, pal.card_border),
-            StrokeKind::Inside,
-        );
-
-        let running = self.status.running;
-        let cx = card.center().x;
-        let cy = card.min.y + 96.0;
-        let t = self.start.elapsed().as_secs_f32();
-
-        // glow rings (running only, gentle pulse)
-        if running {
-            let pulse = 0.55 + 0.45 * (t * 1.7).sin();
-            for i in 0..4u32 {
-                let r = 58.0 + i as f32 * 11.0 + pulse * 5.0;
-                let a = ((30 - i as i32 * 7).max(4) as f32) * (0.6 + 0.4 * pulse);
-                let col = lerp(pal.on_a, pal.on_b, i as f32 / 4.0).gamma_multiply(a / 255.0);
-                ui.painter()
-                    .circle_stroke(Pos2::new(cx, cy), r, Stroke::new(10.0, col));
+    impl Harness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            theme::apply(&ctx);
+            let (ctrl, commands) = Controller::for_ui_test_with_commands();
+            Self {
+                ctx,
+                app: App::new(ctrl),
+                commands,
+                time: 0.0,
+                text: Vec::new(),
             }
         }
 
-        // power button: gradient ring + inner disc + icon
-        let btn = Rect::from_center_size(Pos2::new(cx, cy), vec2(112.0, 112.0));
-        let resp = ui.allocate_rect(btn, Sense::click());
-        let hover = resp.hovered();
-        let down = resp.is_pointer_button_down_on();
-        let target_scale = if down {
-            0.96
-        } else if hover {
-            1.03
-        } else {
-            1.0
-        };
-
-        let scale = ctx.animate_value_with_time(resp.id.with("scale"), target_scale, 0.12);
-        let active = ctx.animate_bool_with_time(resp.id.with("active"), running, 0.25);
-        let (a, b) = (lerp(pal.off_a, pal.on_a, active), lerp(pal.off_b, pal.on_b, active));
-        gradient_ring(
-            ui.painter(),
-            Pos2::new(cx, cy),
-            52.0 * scale,
-            60.0 * scale,
-            a,
-            b,
-        );
-        let inner = if running {
-            lerp(pal.on_a, Color32::BLACK, 0.78)
-        } else {
-            lerp(pal.card, Color32::BLACK, 0.06)
-        };
-        ui.painter()
-            .circle_filled(Pos2::new(cx, cy), 50.0 * scale, inner);
-
-        let icon_col = if running {
-            Color32::WHITE
-        } else if hover {
-            pal.text
-        } else {
-            pal.dim
-        };
-        power_icon(ui.painter(), Pos2::new(cx, cy), 20.0 * scale, icon_col);
-
-        if hover {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            self.ctrl.send(Cmd::Toggle);
-        }
-
-        // status text
-        let (title, sub) = if running {
-            if self.status.auto_started {
-                ("RUNNING", "auto-started with Aion 2")
-            } else {
-                ("RUNNING", "reshaping Aion 2 traffic")
-            }
-        } else {
-            ("STOPPED", "tap the button to start")
-        };
-        ui.painter().text(
-            Pos2::new(cx, card.min.y + 178.0),
-            Align2::CENTER_CENTER,
-            title,
-            FontId::new(21.0, FontFamily::Name("sb".into())),
-            if running { pal.on_b } else { pal.text },
-        );
-        ui.painter().text(
-            Pos2::new(cx, card.min.y + 202.0),
-            Align2::CENTER_CENTER,
-            sub,
-            FontId::new(12.0, FontFamily::Proportional),
-            pal.dim,
-        );
-
-        // chips: game detection + mode
-        let chip_y = card.min.y + 226.0;
-        let (game_txt, game_dot) = if !self.status.watch {
-            ("watch off", pal.dim)
-        } else if self.status.game_present {
-            ("Aion 2 running", pal.on_b)
-        } else {
-            ("Aion 2 idle", pal.dim)
-        };
-        let mode_txt = if self.status.auto_started && running {
-            "AUTO"
-        } else {
-            "MANUAL"
-        };
-        let half = (card.width() - 12.0) / 2.0;
-        self.chip(
-            ui,
-            Rect::from_min_size(Pos2::new(card.min.x + 8.0, chip_y), vec2(half, 24.0)),
-            game_dot,
-            game_txt,
-            pal,
-        );
-        self.chip(
-            ui,
-            Rect::from_min_size(
-                Pos2::new(card.min.x + 12.0 + half, chip_y),
-                vec2(half - 8.0, 24.0),
-            ),
-            pal.accent_a,
-            mode_txt,
-            pal,
-        );
-
-        card.max.y
-    }
-
-    fn chip(&self, ui: &mut egui::Ui, rect: Rect, dot: Color32, text: &str, pal: Palette) {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(12), pal.chip_bg);
-        ui.painter().circle_filled(
-            Pos2::new(rect.min.x + 14.0, rect.center().y),
-            3.5,
-            dot,
-        );
-        ui.painter().text(
-            Pos2::new(rect.min.x + 24.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            text,
-            FontId::new(11.0, FontFamily::Name("md".into())),
-            pal.dim,
-        );
-    }
-
-    // ---------------- bottom status strips ----------------
-
-    /// Rect of the strip docked at the bottom edge (replaces the footer
-    /// hint while shown - it is an overlay, never a layout shift).
-    fn strip_rect(win: Rect) -> Rect {
-        Rect::from_min_size(Pos2::new(win.min.x, win.max.y - 30.0), vec2(win.width(), 30.0))
-    }
-
-    fn paint_error_strip(&mut self, ui: &mut egui::Ui, win: Rect, msg: String, pal: Palette) {
-        let ctx = ui.ctx().clone();
-        let rect = Self::strip_rect(win);
-        ui.painter()
-            .rect_filled(rect, CornerRadius::ZERO, pal.danger_bg);
-        ui.painter().line_segment(
-            [rect.left_top(), rect.right_top()],
-            Stroke::new(1.0, pal.danger.gamma_multiply(0.4)),
-        );
-        ui.painter().circle_stroke(
-            Pos2::new(rect.min.x + 16.0, rect.center().y),
-            6.0,
-            Stroke::new(1.5, pal.danger),
-        );
-        ui.painter().text(
-            Pos2::new(rect.min.x + 16.0, rect.center().y),
-            Align2::CENTER_CENTER,
-            "!",
-            FontId::new(10.0, FontFamily::Name("sb".into())),
-            pal.danger,
-        );
-        ui.painter().text(
-            Pos2::new(rect.min.x + 28.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            truncate(&msg, 44),
-            FontId::new(11.0, FontFamily::Name("md".into())),
-            pal.danger,
-        );
-        let x_btn = Rect::from_center_size(
-            Pos2::new(rect.max.x - 18.0, rect.center().y),
-            vec2(24.0, 24.0),
-        );
-        let r = ui.allocate_rect(x_btn, Sense::click());
-        if r.hovered() {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
-        }
-        ui.painter().text(
-            x_btn.center(),
-            Align2::CENTER_CENTER,
-            "x",
-            FontId::new(11.0, FontFamily::Name("sb".into())),
-            if r.hovered() { pal.danger } else { pal.dim },
-        );
-        if r.clicked() {
-            self.dismissed_error = self.status.error.clone();
-        }
-    }
-
-    fn paint_update_strip(&mut self, ui: &mut egui::Ui, win: Rect, upd: &UpdateInfo, pal: Palette) {
-        let ctx = ui.ctx().clone();
-        let rect = Self::strip_rect(win);
-        ui.painter()
-            .rect_filled(rect, CornerRadius::ZERO, pal.chip_bg);
-        ui.painter().line_segment(
-            [rect.left_top(), rect.right_top()],
-            Stroke::new(1.0, pal.accent_a.gamma_multiply(0.55)),
-        );
-
-        // up arrow icon
-        let ic = Pos2::new(rect.min.x + 16.0, rect.center().y);
-        ui.painter()
-            .circle_stroke(ic, 6.0, Stroke::new(1.5, pal.accent_b));
-        ui.painter().line_segment(
-            [ic + vec2(0.0, 3.0), ic + vec2(0.0, -3.0)],
-            Stroke::new(1.4, pal.accent_b),
-        );
-        ui.painter().line_segment(
-            [ic + vec2(-2.5, -0.5), ic + vec2(0.0, -3.0)],
-            Stroke::new(1.4, pal.accent_b),
-        );
-        ui.painter().line_segment(
-            [ic + vec2(2.5, -0.5), ic + vec2(0.0, -3.0)],
-            Stroke::new(1.4, pal.accent_b),
-        );
-
-        let (msg, action) = match &upd.state {
-            UpdateState::Available => (format!("v{} available", upd.version), Some("UPDATE")),
-            UpdateState::Downloading(p) => (format!("Downloading update... {p}%"), None),
-            UpdateState::Verifying => ("Verifying update...".to_string(), None),
-            UpdateState::Installing => {
-                ("Installing update - app will restart".to_string(), None)
-            }
-            UpdateState::Failed(e) => (format!("Update failed: {e}"), Some("RETRY")),
-        };
-        ui.painter().text(
-            Pos2::new(rect.min.x + 28.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            truncate(&msg, 40),
-            FontId::new(11.0, FontFamily::Name("md".into())),
-            pal.text,
-        );
-
-        if let Some(label) = action {
-            let btn = Rect::from_center_size(
-                Pos2::new(rect.max.x - 42.0, rect.center().y),
-                vec2(56.0, 20.0),
-            );
-            let r = ui.allocate_rect(btn, Sense::click());
-            if r.hovered() {
-                ctx.set_cursor_icon(CursorIcon::PointingHand);
-            }
-            ui.painter().rect_filled(
-                btn,
-                CornerRadius::same(10),
-                if r.hovered() {
-                    pal.accent_a
-                } else {
-                    pal.accent_a.gamma_multiply(0.8)
-                },
-            );
-            ui.painter().text(
-                btn.center(),
-                Align2::CENTER_CENTER,
-                label,
-                FontId::new(9.0, FontFamily::Name("sb".into())),
-                Color32::WHITE,
-            );
-            if r.clicked() {
-                self.ctrl.send(Cmd::ApplyUpdate);
-            }
-        }
-    }
-
-    // ---------------- settings card ----------------
-
-    fn paint_settings(&mut self, ui: &mut egui::Ui, win: Rect, y: f32, pal: Palette) -> f32 {
-        let ctx = ui.ctx().clone();
-        let rect = Rect::from_min_size(
-            Pos2::new(win.min.x + MARGIN, y),
-            vec2(win.width() - 2.0 * MARGIN, 208.0),
-        );
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(16), pal.card);
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(16),
-            Stroke::new(1.0, pal.card_border),
-            StrokeKind::Inside,
-        );
-        ui.painter().text(
-            Pos2::new(rect.min.x + 18.0, rect.min.y + 20.0),
-            Align2::LEFT_CENTER,
-            "SETTINGS",
-            FontId::new(10.5, FontFamily::Name("sb".into())),
-            pal.dim,
-        );
-
-        let rows: [(&str, &str, bool, Cmd, Cmd); 3] = [
-            (
-                "Auto-start with Aion 2",
-                "Engine starts when the game launches",
-                self.status.watch,
-                Cmd::SetWatch(false),
-                Cmd::SetWatch(true),
-            ),
-            (
-                "Start engine on app open",
-                "Turn on as soon as this app opens",
-                self.status.startup_engine,
-                Cmd::SetStartupEngine(false),
-                Cmd::SetStartupEngine(true),
-            ),
-            (
-                "Launch with Windows",
-                "Start minimized in the tray on login",
-                self.status.autostart,
-                Cmd::SetAutostart(false),
-                Cmd::SetAutostart(true),
-            ),
-        ];
-
-        let mut ry = rect.min.y + 40.0;
-        for (i, (title, sub, on, off_cmd, on_cmd)) in rows.into_iter().enumerate() {
-            let row = Rect::from_min_size(
-                Pos2::new(rect.min.x + 12.0, ry),
-                vec2(rect.width() - 24.0, 42.0),
-            );
-            let hr = ui.interact(row, ui.scope_id().with(i), Sense::hover());
-            if hr.hovered() {
-                ui.painter()
-                    .rect_filled(row, CornerRadius::same(10), pal.btn_hover);
-            }
-            ui.painter().text(
-                Pos2::new(row.min.x + 8.0, row.min.y + 12.0),
-                Align2::LEFT_CENTER,
-                title,
-                FontId::new(13.0, FontFamily::Name("md".into())),
-                pal.text,
-            );
-            ui.painter().text(
-                Pos2::new(row.min.x + 8.0, row.min.y + 29.0),
-                Align2::LEFT_CENTER,
-                sub,
-                FontId::new(10.5, FontFamily::Proportional),
-                pal.dim,
-            );
-
-            // toggle switch
-            let sw = Rect::from_center_size(
-                Pos2::new(row.max.x - 28.0, row.center().y),
-                vec2(40.0, 22.0),
-            );
-            let r = ui.allocate_rect(sw, Sense::click());
-            let anim = ctx.animate_bool(r.id, on);
-            if r.hovered() {
-                ctx.set_cursor_icon(CursorIcon::PointingHand);
-            }
-            let track = lerp(pal.off_a, pal.accent_a, anim);
-            ui.painter().rect_filled(sw, CornerRadius::same(11), track);
-            let kx = egui::emath::lerp(sw.min.x + 11.0..=sw.max.x - 11.0, anim);
-            ui.painter()
-                .circle_filled(Pos2::new(kx, sw.center().y), 8.0, Color32::WHITE);
-            if r.clicked() {
-                self.ctrl.send(if on { off_cmd } else { on_cmd });
-                ctx.request_repaint_after(Duration::from_millis(120));
-            }
-            ry += 42.0;
-        }
-
-        // updates row: installed version / check state + manual CHECK
-        let row = Rect::from_min_size(
-            Pos2::new(rect.min.x + 12.0, ry),
-            vec2(rect.width() - 24.0, 42.0),
-        );
-        let hr = ui.interact(row, ui.scope_id().with("updates"), Sense::hover());
-        if hr.hovered() {
-            ui.painter()
-                .rect_filled(row, CornerRadius::same(10), pal.btn_hover);
-        }
-        ui.painter().text(
-            Pos2::new(row.min.x + 8.0, row.min.y + 12.0),
-            Align2::LEFT_CENTER,
-            "Updates",
-            FontId::new(13.0, FontFamily::Name("md".into())),
-            pal.text,
-        );
-        let checking = matches!(self.status.check, CheckState::Checking);
-        let sub = if let Some(u) = &self.status.update {
-            format!("v{} available", u.version)
-        } else {
-            match self.status.check {
-                CheckState::Checking => "Checking...".to_string(),
-                CheckState::UpToDate => "Latest version installed".to_string(),
-                CheckState::Failed => "Check failed - try again".to_string(),
-                CheckState::Idle => concat!("v", env!("CARGO_PKG_VERSION"), " installed").to_string(),
-            }
-        };
-        ui.painter().text(
-            Pos2::new(row.min.x + 8.0, row.min.y + 29.0),
-            Align2::LEFT_CENTER,
-            sub,
-            FontId::new(10.5, FontFamily::Proportional),
-            pal.dim,
-        );
-
-        // CHECK pill button (dimmed while a check is in flight)
-        let btn = Rect::from_center_size(
-            Pos2::new(row.max.x - 34.0, row.center().y),
-            vec2(52.0, 22.0),
-        );
-        let r = ui.allocate_rect(btn, Sense::click());
-        let alpha = if checking {
-            0.35
-        } else if r.hovered() {
-            1.0
-        } else {
-            0.8
-        };
-        if r.hovered() && !checking {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
-        }
-        ui.painter().rect_filled(
-            btn,
-            CornerRadius::same(11),
-            pal.accent_a.gamma_multiply(alpha),
-        );
-        ui.painter().text(
-            btn.center(),
-            Align2::CENTER_CENTER,
-            "CHECK",
-            FontId::new(9.0, FontFamily::Name("sb".into())),
-            Color32::WHITE,
-        );
-        if r.clicked() && !checking {
-            self.ctrl.send(Cmd::CheckUpdate);
-        }
-        rect.max.y
-    }
-
-    // ---------------- footer ----------------
-
-    fn paint_footer(&self, ui: &mut egui::Ui, win: Rect, pal: Palette) {
-        let p = Pos2::new(win.center().x, win.max.y - 14.0);
-        ui.painter().text(
-            p,
-            Align2::CENTER_CENTER,
-            "minimize or close keeps it running in the tray",
-            FontId::new(10.5, FontFamily::Proportional),
-            pal.dim.gamma_multiply(0.75),
-        );
-    }
-
-    // ---------------- preview helpers (non-windows) ----------------
-
-    #[cfg(not(windows))]
-    fn preview_hooks(&mut self, ctx: &egui::Context) {
-        if self.frame == 3 && std::env::var("AION_PREVIEW_RUNNING").is_ok() {
-            self.ctrl.send(Cmd::Start { auto: false });
-        }
-        if std::env::var("AION_PREVIEW_WATCH").is_ok() {
-            self.ctrl.send(Cmd::SetWatch(true));
-        }
-        if let Some(path) = self.shot.clone() {
-            if self.frame == 10 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
-                    egui::ScreenshotCallback::new(move |img| {
-                        let _ = std::fs::write(format!("{path}.raw"), img.as_raw());
-                        let _ = std::fs::write(
-                            format!("{path}.meta"),
-                            format!("{} {}", img.width(), img.height()),
+        fn frame(&mut self, size: Vec2, scale: f32, events: Vec<Event>) {
+            self.time += 1.0 / 30.0;
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale);
+            let mut output = self.ctx.run_ui(input, |ui| self.app.show(ui));
+            // No GPU in headless tests. Explicitly acknowledge texture updates.
+            output.textures_delta.clear();
+            assert_eq!(output.pixels_per_point, scale);
+            self.text.clear();
+            for clipped in &output.shapes {
+                assert!(clipped.clip_rect.is_finite());
+                if let Shape::Text(text) = &clipped.shape {
+                    let bounds = Rect::from_min_size(text.pos, text.galley.size());
+                    assert!(bounds.is_finite());
+                    if bounds.intersects(clipped.clip_rect) {
+                        // Below 300 points, horizontal scrolling is intentional.
+                        assert!(
+                            size.x < 300.0
+                                || (bounds.left() >= -1.0 && bounds.right() <= size.x + 1.0),
+                            "Text outside window at {size:?}, scale {scale}: {:?} {bounds:?}",
+                            text.galley.text()
                         );
-                    }),
-                ));
+                        // Only click labels whose center is actually in the visible clip.
+                        if clipped.clip_rect.contains(bounds.center()) {
+                            self.text.push((text.galley.text().to_owned(), bounds));
+                        }
+                    }
+                }
             }
-            if self.frame == 16 {
-                std::process::exit(0);
+            let meshes = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+            if size.x > 0.0 && size.y > 0.0 {
+                assert!(!meshes.is_empty());
+            }
+        }
+
+        fn find(&self, label: &str) -> Option<Pos2> {
+            self.text
+                .iter()
+                .find(|(text, _)| text == label)
+                .map(|(_, rect)| rect.center())
+        }
+
+        fn click(&mut self, label: &str, size: Vec2, scale: f32) {
+            let pos = self
+                .find(label)
+                .unwrap_or_else(|| panic!("Missing visible control: {label}"));
+            self.frame(size, scale, vec![Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                self.frame(
+                    size,
+                    scale,
+                    vec![Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+        }
+
+        fn wheel(&mut self, size: Vec2, scale: f32, delta: Vec2) {
+            self.frame(
+                size,
+                scale,
+                vec![
+                    Event::PointerMoved((size * 0.5).to_pos2()),
+                    Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta,
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Unknown,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+            // Let wheel smoothing settle before hit testing.
+            for _ in 0..8 {
+                self.frame(size, scale, vec![]);
             }
         }
     }
-}
 
-// ---------------- paint helpers ----------------
-
-fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
-    Color32::from_rgb(
-        (a.r() as f32 + (b.r() as f32 - a.r() as f32) * t) as u8,
-        (a.g() as f32 + (b.g() as f32 - a.g() as f32) * t) as u8,
-        (a.b() as f32 + (b.b() as f32 - a.b() as f32) * t) as u8,
-    )
-}
-
-/// Ring mesh with a gradient from `a` to `b` around the circle.
-fn gradient_ring(
-    painter: &egui::Painter,
-    center: Pos2,
-    inner_r: f32,
-    outer_r: f32,
-    a: Color32,
-    b: Color32,
-) {
-    const N: usize = 72;
-    let mut mesh = Mesh::default();
-    for i in 0..=N {
-        let f = i as f32 / N as f32;
-        let ang = f * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        let dir = vec2(ang.cos(), ang.sin());
-        let col = lerp(a, b, 0.5 + 0.5 * (f * std::f32::consts::TAU).cos());
-        mesh.colored_vertex(center + dir * outer_r, col);
-        mesh.colored_vertex(center + dir * inner_r, col);
+    #[test]
+    fn layout_matrix_across_native_scales_themes_and_app_states() {
+        let mut h = Harness::new();
+        for theme in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
+            h.ctx.set_theme(theme);
+            for &scale in SCALES {
+                for size in [
+                    vec2(300.0, 240.0),
+                    vec2(300.0, 1200.0),
+                    vec2(1600.0, 240.0),
+                    vec2(460.0, 680.0),
+                    vec2(791.0, 600.0),
+                    vec2(792.0, 600.0),
+                    vec2(793.0, 600.0),
+                    vec2(803.0, 600.0),
+                    vec2(804.0, 600.0),
+                    vec2(805.0, 600.0),
+                    vec2(2048.0, 1280.0),
+                    vec2(1280.0, 720.0) / scale,
+                    vec2(2560.0, 1600.0) / scale,
+                    vec2(3840.0, 2160.0) / scale,
+                    vec2(5120.0, 2880.0) / scale,
+                    vec2(7680.0, 4320.0) / scale,
+                ] {
+                    for state in 0..4 {
+                        h.app.status.running = state == 1;
+                        h.app.status.game_present = state == 1;
+                        h.app.status.error = (state == 2).then(|| {
+                            "Driver failure: ".to_owned()
+                                + &"very-long-unbroken-path-component".repeat(20)
+                        });
+                        h.app.status.update = (state == 3).then(|| UpdateInfo {
+                            version: "999.999.999".into(),
+                            zip_url: String::new(),
+                            manifest_url: String::new(),
+                            state: UpdateState::Failed("Network error ".repeat(40)),
+                        });
+                        h.frame(size, scale, vec![]);
+                    }
+                }
+            }
+        }
     }
-    for i in 0..N {
-        let o = (i * 2) as u32;
-        mesh.add_triangle(o, o + 1, o + 2);
-        mesh.add_triangle(o + 1, o + 3, o + 2);
-    }
-    painter.add(Shape::mesh(mesh));
-}
 
-/// Classic power symbol: arc with a gap at top + vertical stroke.
-fn power_icon(painter: &egui::Painter, center: Pos2, r: f32, col: Color32) {
-    let w = r * 0.22;
-    // arc: gap at top, spans 300deg around the bottom
-    let mut pts = Vec::with_capacity(64);
-    let start = 120.0f32.to_radians();
-    let end = 420.0f32.to_radians();
-    for i in 0..64 {
-        let a = start + (end - start) * (i as f32 / 63.0);
-        pts.push(center + vec2(a.cos() * r, -a.sin() * r));
+    #[test]
+    fn controls_remain_clickable_after_mixed_dpi_and_resize_transitions() {
+        let mut h = Harness::new();
+        // Deliberately alternate high/low DPI and wide/narrow windows.
+        for (size, scale) in [
+            (vec2(900.0, 700.0), 1.0),
+            (vec2(300.0, 240.0), 5.0),
+            (vec2(1200.0, 800.0), 2.25),
+            (vec2(460.0, 680.0), 8.0),
+            (vec2(300.0, 240.0), 1.25),
+        ] {
+            h.frame(size, scale, vec![]);
+            h.frame(size, scale, vec![]);
+            h.click("Start engine", size, scale);
+            assert!(matches!(
+                h.commands.try_recv(),
+                Ok(Cmd::Start { auto: false })
+            ));
+            h.app.status.running = true;
+            h.frame(size, scale, vec![]);
+            h.click("Stop engine", size, scale);
+            assert!(matches!(
+                h.commands.try_recv(),
+                Ok(Cmd::Stop { manual: true })
+            ));
+            h.app.status.running = false;
+            assert!(h.commands.try_recv().is_err(), "One command per click");
+        }
     }
-    painter.add(Shape::line(pts.clone(), Stroke::new(w, col)));
-    if let (Some(f), Some(l)) = (pts.first(), pts.last()) {
-        painter.circle_filled(*f, w / 2.0, col);
-        painter.circle_filled(*l, w / 2.0, col);
-    }
-    // vertical stroke from top center downward
-    let top = center + vec2(0.0, -r * 1.15);
-    let bot = center + vec2(0.0, -r * 0.1);
-    painter.line_segment([top, bot], Stroke::new(w, col));
-    painter.circle_filled(top, w / 2.0, col);
-    painter.circle_filled(bot, w / 2.0, col);
-}
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(n - 3).collect::<String>())
+    #[test]
+    fn scrolling_reaches_settings_and_long_errors_at_high_dpi() {
+        for &scale in SCALES {
+            let mut h = Harness::new();
+            let size = vec2(300.0, 240.0);
+            h.app.status.error = Some("Long error message. ".repeat(30));
+            h.frame(size, scale, vec![]);
+            for _ in 0..24 {
+                if h.find("Auto-start with Aion").is_some() {
+                    break;
+                }
+                h.wheel(size, scale, vec2(0.0, -64.0));
+            }
+            h.click("Auto-start with Aion", size, scale);
+            assert!(matches!(h.commands.try_recv(), Ok(Cmd::SetWatch(true))));
+            for _ in 0..24 {
+                if h.find("Check for updates").is_some() {
+                    break;
+                }
+                h.wheel(size, scale, vec2(0.0, -64.0));
+            }
+            h.click("Check for updates", size, scale);
+            assert!(matches!(h.commands.try_recv(), Ok(Cmd::CheckUpdate)));
+            for _ in 0..40 {
+                if h.find("Dismiss").is_some() {
+                    break;
+                }
+                h.wheel(size, scale, vec2(0.0, -128.0));
+            }
+            h.click("Dismiss", size, scale);
+            assert!(h.app.dismissed_error.is_some());
+            // A shrinking scrollable area must not leave the UI stranded
+            // beyond its new content after an error is dismissed.
+            h.wheel(size, scale, vec2(0.0, 10000.0));
+            assert!(h.find("Start engine").is_some());
+        }
+    }
+    #[test]
+    fn small_display_at_extreme_scale_can_scroll_to_both_sides_of_controls() {
+        let mut h = Harness::new();
+        // 1280x720 at 800% leaves only 160x90 logical points.
+        let size = vec2(160.0, 90.0);
+        h.frame(size, 8.0, vec![]);
+        h.wheel(size, 8.0, vec2(-80.0, 0.0));
+        let mut saw_start = false;
+        for _ in 0..40 {
+            if h.find("Start engine").is_some() {
+                saw_start = true;
+                break;
+            }
+            h.wheel(size, 8.0, vec2(0.0, -16.0));
+        }
+        assert!(
+            saw_start,
+            "Engine button must be reachable on a tiny viewport"
+        );
+        h.click("Start engine", size, 8.0);
+        assert!(matches!(
+            h.commands.try_recv(),
+            Ok(Cmd::Start { auto: false })
+        ));
+        // Horizontal wheel movement must also be possible; then resize back
+        // to a normal width and ensure the old offset does not strand controls.
+        h.wheel(size, 8.0, vec2(-1000.0, 0.0));
+        h.frame(vec2(900.0, 900.0), 1.0, vec![]);
+        h.frame(vec2(900.0, 900.0), 1.0, vec![]);
+        assert!(h.find("Start engine").is_some());
+        h.click("Check for updates", vec2(900.0, 900.0), 1.0);
+        assert!(matches!(h.commands.try_recv(), Ok(Cmd::CheckUpdate)));
+    }
+
+    #[test]
+    fn disabled_controls_and_restore_after_zero_sized_viewport() {
+        let mut h = Harness::new();
+        let size = vec2(460.0, 680.0);
+        h.app.status.update = Some(UpdateInfo {
+            version: "999.0.0".into(),
+            zip_url: String::new(),
+            manifest_url: String::new(),
+            state: UpdateState::Downloading(40),
+        });
+        for &scale in SCALES {
+            h.frame(size, scale, vec![]);
+            h.frame(size, scale, vec![]);
+            h.click("Start engine", size, scale);
+            assert!(
+                h.commands.try_recv().is_err(),
+                "Busy updater must disable engine start"
+            );
+        }
+        h.frame(Vec2::ZERO, 5.0, vec![]);
+        h.app.status.update = None;
+        h.frame(size, 1.25, vec![]);
+        h.frame(size, 1.25, vec![]);
+        h.click("Start engine", size, 1.25);
+        assert!(matches!(
+            h.commands.try_recv(),
+            Ok(Cmd::Start { auto: false })
+        ));
+    }
+    #[test]
+    fn keyboard_focus_scrolls_controls_into_view_at_high_scaling() {
+        let mut h = Harness::new();
+        let size = vec2(300.0, 240.0);
+        h.frame(size, 5.0, vec![]);
+        for key in [
+            egui::Key::Tab,
+            egui::Key::Enter,
+            egui::Key::Tab,
+            egui::Key::Space,
+        ] {
+            for pressed in [true, false] {
+                h.frame(
+                    size,
+                    5.0,
+                    vec![Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+            for _ in 0..8 {
+                h.frame(size, 5.0, vec![]);
+            }
+            let focused = h
+                .ctx
+                .memory(|m| m.focused())
+                .expect("Keyboard focus must remain on a control");
+            let response = h.ctx.read_response(focused).unwrap();
+            assert!(
+                Rect::from_min_size(Pos2::ZERO, size).contains(response.rect.center()),
+                "Focused control should scroll into view: {:?}",
+                response.rect
+            );
+        }
+        assert!(matches!(
+            h.commands.try_recv(),
+            Ok(Cmd::Start { auto: false })
+        ));
+        assert!(matches!(h.commands.try_recv(), Ok(Cmd::SetWatch(true))));
+        assert!(h.commands.try_recv().is_err());
     }
 }

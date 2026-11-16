@@ -6,63 +6,42 @@ use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke,
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Color32,
-    pub title_bar: Color32,
     pub card: Color32,
     pub card_border: Color32,
     pub text: Color32,
     pub dim: Color32,
     pub accent_a: Color32,
-    pub accent_b: Color32,
-    pub on_a: Color32,
-    pub on_b: Color32,
     pub off_a: Color32,
-    pub off_b: Color32,
     pub danger: Color32,
     pub danger_bg: Color32,
-    pub chip_bg: Color32,
-    pub btn_hover: Color32,
 }
 
 impl Palette {
     pub fn dark() -> Self {
         Self {
             bg: Color32::from_rgb(11, 14, 20),
-            title_bar: Color32::from_rgb(14, 18, 26),
             card: Color32::from_rgb(19, 24, 36),
             card_border: Color32::from_rgb(35, 42, 59),
             text: Color32::from_rgb(242, 244, 249),
             dim: Color32::from_rgb(138, 147, 166),
             accent_a: Color32::from_rgb(99, 102, 241),
-            accent_b: Color32::from_rgb(34, 211, 238),
-            on_a: Color32::from_rgb(16, 185, 129),
-            on_b: Color32::from_rgb(52, 211, 153),
             off_a: Color32::from_rgb(71, 85, 105),
-            off_b: Color32::from_rgb(100, 116, 139),
             danger: Color32::from_rgb(248, 113, 113),
             danger_bg: Color32::from_rgb(60, 24, 30),
-            chip_bg: Color32::from_rgb(26, 32, 48),
-            btn_hover: Color32::from_rgb(38, 46, 64),
         }
     }
 
     pub fn light() -> Self {
         Self {
             bg: Color32::from_rgb(243, 245, 250),
-            title_bar: Color32::from_rgb(235, 238, 246),
             card: Color32::WHITE,
             card_border: Color32::from_rgb(224, 229, 240),
             text: Color32::from_rgb(23, 27, 38),
             dim: Color32::from_rgb(95, 104, 120),
             accent_a: Color32::from_rgb(79, 70, 229),
-            accent_b: Color32::from_rgb(8, 145, 178),
-            on_a: Color32::from_rgb(5, 150, 105),
-            on_b: Color32::from_rgb(16, 185, 129),
             off_a: Color32::from_rgb(148, 163, 184),
-            off_b: Color32::from_rgb(203, 213, 225),
             danger: Color32::from_rgb(220, 38, 38),
             danger_bg: Color32::from_rgb(254, 226, 226),
-            chip_bg: Color32::from_rgb(241, 245, 249),
-            btn_hover: Color32::from_rgb(226, 232, 240),
         }
     }
 }
@@ -119,6 +98,21 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.active.corner_radius = CornerRadius::same(8);
         let mut style = (*ctx.style_of(theme)).clone();
         style.visuals = v;
+        // Readable logical sizes; egui rasterizes these at each monitor's
+        // native pixels-per-point rather than stretching a cached bitmap.
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
+        style.spacing.interact_size = egui::vec2(40.0, 32.0);
         ctx.set_style_of(theme, style);
     }
     ctx.set_theme(egui::ThemePreference::System);

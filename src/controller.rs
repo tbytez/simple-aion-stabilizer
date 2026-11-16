@@ -293,6 +293,12 @@ impl Controller {
         let _ = self.tx.send(cmd);
     }
 
+    #[cfg(test)]
+    pub fn for_ui_test_with_commands() -> (Self, Receiver<Cmd>) {
+        let (tx, rx) = channel();
+        (Self { tx, status: Arc::new(Mutex::new(Status::default())) }, rx)
+    }
+
     pub fn status(&self) -> Status {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
@@ -374,9 +380,7 @@ fn run(
             Ok(Cmd::Toggle) => {
                 if engine.is_running() {
                     engine.stop();
-                    if game_present {
-                        manual_latch = true;
-                    }
+                    manual_latch = true;
                     set_status!(running, false);
                     set_status!(auto_started, false);
                 } else {
@@ -413,7 +417,7 @@ fn run(
             }
             Ok(Cmd::Stop { manual }) => {
                 engine.stop();
-                if manual && game_present {
+                if manual {
                     manual_latch = true;
                 }
                 set_status!(running, false);
@@ -464,6 +468,11 @@ fn run(
             last_poll = Instant::now();
             if watch_on {
                 let now = procs::any_running(&cfg.watch_names);
+                // A manual Stop must also hold before the first process poll.
+                // Only a confirmed absence clears it, never stale cached state.
+                if !now {
+                    manual_latch = false;
+                }
                 if now != game_present {
                     game_present = now;
                     set_status!(game_present, now);
