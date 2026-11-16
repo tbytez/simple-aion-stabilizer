@@ -73,7 +73,8 @@ winws process establishes startup success, not login or gameplay success.
   GUI executable, and contains the expected manifest/icon resource section
   and v0.1.8.0 version metadata. Packaged profile, recovery script and docs
   match the current sources.
-- Shell syntax checks and git diff whitespace checks pass.
+- Shell syntax checks and authored-source whitespace checks pass. The
+  imported Flowseal license retains its original Markdown hard-break spaces.
 
 ## Required Windows release gates
 
