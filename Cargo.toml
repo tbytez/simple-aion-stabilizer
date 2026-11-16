@@ -1,0 +1,20 @@
+[package]
+name = "aion-stabilizer"
+version = "1.0.0"
+edition = "2021"
+build = "build.rs"
+description = "Simple tray-based Aion connection stabilizer for Windows (zapret/winws frontend)"
+license = "MIT"
+
+[dependencies]
+native-windows-gui = "1.0"
+
+[build-dependencies]
+embed-resource = "2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

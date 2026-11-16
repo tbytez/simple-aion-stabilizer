@@ -1,0 +1,16 @@
+# Aion / NCSoft domains. One per line; subdomains are matched automatically.
+# Add your region's servers/CDNs here if you find more that need desync.
+ncsoft.com
+plaync.com
+aion2.plaync.com
+aion.plaync.com
+aiononline.com
+nclivecdn.com
+ncplatform.net
+purpleplatform.net
+ncdn.net
+static.plaync.com
+api.plaync.com
+auth.plaync.com
+update.plaync.com
+download.plaync.com
