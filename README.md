@@ -48,7 +48,8 @@ and stops it when you quit. (Watched exe names can be changed with
 
 The app checks GitHub for a newer release on start and offers a
 one-click in-place update (it keeps your `config.ini` and `profile.txt`).
-Disable the check with `update_check=0` in `config.ini`.
+Updates install only after a signed manifest verifies every payload
+file. Disable the check with `update_check=0` in `config.ini`.
 
 To remove the app: quit it from the tray (stopping the engine also
 unloads the WinDivert driver), then delete the folder - no reboot needed.
@@ -79,3 +80,8 @@ rustup target add x86_64-pc-windows-gnu
 cargo build --release --target x86_64-pc-windows-gnu
 ./package.sh <path-to-extracted-zapret-bundle>
 ```
+
+`package.sh` also signs the update manifest when a signing key exists
+(`release-keys/update-private.key` or `AION_UPDATE_KEY`). See
+[RELEASING.md](RELEASING.md) for key provisioning and release gates -
+unsigned releases are refused by the updater.

@@ -33,7 +33,9 @@ pub enum UpdateState {
 pub struct UpdateInfo {
     pub version: String,
     #[allow(dead_code)] // read only by the Windows updater
-    pub url: String,
+    pub zip_url: String,
+    #[allow(dead_code)] // read only by the Windows updater
+    pub manifest_url: String,
     pub state: UpdateState,
 }
 
@@ -107,14 +109,15 @@ fn save_config(app_dir: &Path, key: &str, value: &str) {
 #[cfg(windows)]
 fn check_for_update(status: Arc<Mutex<Status>>, wake: Arc<dyn Fn() + Send + Sync>) {
     std::thread::spawn(move || {
-        if let Ok(Some((version, url))) = crate::update::check_latest() {
+        if let Ok(Some(rel)) = crate::update::check_latest() {
             if let Ok(mut s) = status.lock() {
                 // never clobber an in-progress download
                 let busy = matches!(s.update.as_ref().map(|u| &u.state), Some(UpdateState::Working(_)));
                 if !busy {
                     s.update = Some(UpdateInfo {
-                        version,
-                        url,
+                        version: rel.version,
+                        zip_url: rel.zip_url,
+                        manifest_url: rel.manifest_url,
                         state: UpdateState::Available,
                     });
                 }
@@ -162,8 +165,9 @@ fn apply_update_now(
 ) {
 }
 
-/// Worker: download -> extract -> swap -> relaunch. Exits the process on
-/// success; on failure reports UpdateState::Failed (retry keeps the url).
+/// Worker: private stage -> download -> verify manifest -> extract ->
+/// verify files -> swap -> relaunch. Exits the process on success; on
+/// failure reports UpdateState::Failed (retry keeps the release info).
 #[cfg(windows)]
 fn apply_update(
     app_dir: PathBuf,
@@ -184,16 +188,12 @@ fn apply_update(
         }
     };
 
-    let result = crate::update::download(&info.url, &mut on_pct).and_then(|zip| {
-        let r = crate::update::extract(&zip).and_then(|dir| {
-            let r = crate::update::apply(&app_dir, &dir)
-                .and_then(|_| crate::update::relaunch(&app_dir));
-            let _ = std::fs::remove_dir_all(&dir);
-            r
-        });
-        let _ = std::fs::remove_file(&zip);
-        r
-    });
+    let rel = crate::core::ReleaseInfo {
+        version: info.version.clone(),
+        zip_url: info.zip_url.clone(),
+        manifest_url: info.manifest_url.clone(),
+    };
+    let result = crate::update::run_update(&app_dir, &rel, &mut on_pct);
 
     match result {
         Ok(()) => std::process::exit(0),
@@ -285,7 +285,8 @@ fn run(
             update,
             Some(UpdateInfo {
                 version: "9.9.9".into(),
-                url: String::new(),
+                zip_url: String::new(),
+                manifest_url: String::new(),
                 state,
             })
         );

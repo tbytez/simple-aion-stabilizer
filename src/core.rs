@@ -82,6 +82,15 @@ pub const DEFAULT_WATCH_PROCESSES: &[&str] = &["aion2.exe", "aion.bin", "aion.ex
 
 // ---------------- update check helpers ----------------
 
+/// A release we may update to: payload zip + its signed manifest.
+#[derive(Clone)]
+#[allow(dead_code)] // fields are read only by the Windows updater
+pub struct ReleaseInfo {
+    pub version: String,
+    pub zip_url: String,
+    pub manifest_url: String,
+}
+
 /// Parse "v1.2.3" / "1.2.3" / "1.2.3-beta" into (1,2,3). Missing parts
 /// default to 0. Returns None when the leading token is not numeric.
 #[allow(dead_code)] // used on Windows + in tests
@@ -108,24 +117,45 @@ pub fn version_newer(tag: &str, current: &str) -> bool {
     }
 }
 
-/// Extract (version, download-url) from a GitHub `releases/latest` JSON
-/// body when it carries a `*-win64.zip` asset and is newer than `current`.
+/// Extract a ReleaseInfo from a GitHub `releases/latest` JSON body when
+/// it is newer than `current` and carries both a `*-win64.zip` asset and
+/// the signed `*-manifest.txt` asset that belongs to it (same name with
+/// the `-win64.zip` suffix swapped for `-manifest.txt`). Missing either
+/// half means there is nothing verifiable to install - fail closed.
 #[allow(dead_code)] // used on Windows + in tests
-pub fn release_from_json(json: &serde_json::Value, current: &str) -> Option<(String, String)> {
+pub fn release_from_json(json: &serde_json::Value, current: &str) -> Option<ReleaseInfo> {
     let tag = json.get("tag_name")?.as_str()?;
     if !version_newer(tag, current) {
         return None;
     }
     let version = tag.trim().trim_start_matches(['v', 'V']).to_string();
     let assets = json.get("assets")?.as_array()?;
+    let asset = |want: &str| -> Option<String> {
+        assets.iter().find_map(|a| {
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            let url = a
+                .get("browser_download_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            (name == want && url.starts_with("https://")).then(|| url.to_string())
+        })
+    };
     for a in assets {
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-        let url = a
-            .get("browser_download_url")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if name.ends_with("-win64.zip") && url.starts_with("https://") {
-            return Some((version, url.to_string()));
+        let Some(stem) = name.strip_suffix("-win64.zip") else {
+            continue;
+        };
+        let Some(zip_url) = asset(name) else {
+            continue;
+        };
+        // the manifest must sit next to its zip, named after it
+        let manifest_name = format!("{stem}-manifest.txt");
+        if let Some(manifest_url) = asset(&manifest_name) {
+            return Some(ReleaseInfo {
+                version,
+                zip_url,
+                manifest_url,
+            });
         }
     }
     None
@@ -254,16 +284,34 @@ mod tests {
             "assets": [
                 {"name": "source.tar.gz", "browser_download_url": "https://x/src"},
                 {"name": "SimpleAionStabilizer-v1.2.0-win64.zip",
-                 "browser_download_url": "https://x/app.zip"}
+                 "browser_download_url": "https://x/app.zip"},
+                {"name": "SimpleAionStabilizer-v1.2.0-manifest.txt",
+                 "browser_download_url": "https://x/app-manifest.txt"}
             ]
         });
-        let (v, url) = release_from_json(&json, "1.0.0").unwrap();
-        assert_eq!(v, "1.2.0");
-        assert_eq!(url, "https://x/app.zip");
+        let r = release_from_json(&json, "1.0.0").unwrap();
+        assert_eq!(r.version, "1.2.0");
+        assert_eq!(r.zip_url, "https://x/app.zip");
+        assert_eq!(r.manifest_url, "https://x/app-manifest.txt");
 
         // same version -> no update
         assert!(release_from_json(&json, "1.2.0").is_none());
-        // no matching asset
+        // zip without its signed manifest -> fail closed
+        let unsigned = serde_json::json!({
+            "tag_name": "v9.9.9",
+            "assets": [{"name": "App-v9.9.9-win64.zip", "browser_download_url": "https://x/a"}]
+        });
+        assert!(release_from_json(&unsigned, "1.0.0").is_none());
+        // manifest for a *different* zip name must not pair
+        let mismatched = serde_json::json!({
+            "tag_name": "v9.9.9",
+            "assets": [
+                {"name": "App-v9.9.9-win64.zip", "browser_download_url": "https://x/a"},
+                {"name": "Other-v9.9.9-manifest.txt", "browser_download_url": "https://x/m"}
+            ]
+        });
+        assert!(release_from_json(&mismatched, "1.0.0").is_none());
+        // manifest but no zip -> no update
         let nozip = serde_json::json!({"tag_name": "v9.9.9", "assets": [{"name": "src.zip", "browser_download_url": "https://x/a"}]});
         assert!(release_from_json(&nozip, "1.0.0").is_none());
         // assets missing entirely

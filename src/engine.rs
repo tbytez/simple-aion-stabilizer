@@ -79,7 +79,9 @@ impl Engine {
 
         // Some desync modes need TCP timestamps enabled system-wide (same
         // thing the zapret service scripts do). Harmless standard TCP option.
-        let _ = Command::new("netsh")
+        // Invoke by absolute System32 path so a hostile PATH cannot
+        // substitute a fake netsh.
+        let _ = Command::new(crate::sys::system_tool("netsh.exe"))
             .args(["interface", "tcp", "set", "global", "timestamps=enabled"])
             .creation_flags(CREATE_NO_WINDOW)
             .status();

@@ -1,14 +1,28 @@
-//! Self-update against GitHub releases: check, download, swap, relaunch.
+//! Self-update against GitHub releases: check, download, verify, swap,
+//! relaunch.
 //!
 //! A running exe cannot be overwritten on Windows, but it CAN be renamed.
 //! Apply order is chosen so a crash at any point leaves a usable install:
 //! stage the new exe as `*.new` first, rename the running exe aside to
 //! `*.old`, rename `*.new` into place, then copy the rest. The relaunched
 //! process deletes the leftovers on startup.
+//!
+//! Security properties of the pipeline (see src/manifest.rs):
+//! - all network artifacts live in a private ACL'd staging dir under the
+//!   machine temp dir, exclusively created and pinned for the update's
+//!   lifetime - an unelevated same-user process cannot squat on, tamper
+//!   with, or delete the staging tree (no predictable temp paths)
+//! - downloads are byte-capped and the zip is extracted under hard
+//!   entry/size/count limits
+//! - an Ed25519-signed manifest (pinned public key) must cover the zip
+//!   hash and every extracted payload file's hash+size before anything
+//!   is applied; every check fails closed
 
 #![cfg(windows)]
 
-use crate::core;
+use crate::core::{self, ReleaseInfo};
+use crate::manifest;
+use crate::sys;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,10 +30,13 @@ use std::process::Command;
 use std::time::Duration;
 
 const REPO: &str = "tbytez/simple-aion-stabilizer";
-const APP_EXE: &str = "AionStabilizer.exe";
+const APP_EXE: &str = manifest::APP_EXE;
 
 /// Files the user may have edited - never overwritten by an update.
 const KEEP: &[&str] = &["config.ini", "profile.txt"];
+
+/// Cap on the GitHub API response itself.
+const MAX_API_BYTES: u64 = 4 * 1024 * 1024;
 
 fn agent(timeout_secs: u64) -> ureq::Agent {
     let cfg = ureq::Agent::config_builder()
@@ -29,36 +46,63 @@ fn agent(timeout_secs: u64) -> ureq::Agent {
     ureq::Agent::new_with_config(cfg)
 }
 
-/// Latest GitHub release with a `*-win64.zip` asset newer than the
-/// running version. Ok(None) = up to date or no usable asset.
-pub fn check_latest() -> Result<Option<(String, String)>, String> {
+/// Latest GitHub release with a `*-win64.zip` asset AND its matching
+/// `*-manifest.txt` asset, newer than the running version.
+/// Ok(None) = up to date or no usable/verifiable assets (fail closed).
+pub fn check_latest() -> Result<Option<ReleaseInfo>, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let mut resp = agent(15).get(&url).call().map_err(|e| e.to_string())?;
-    let body = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    let mut body = String::new();
+    resp.body_mut()
+        .as_reader()
+        .take(MAX_API_BYTES)
+        .read_to_string(&mut body)
+        .map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     Ok(core::release_from_json(&json, env!("CARGO_PKG_VERSION")))
 }
 
-/// Download `url` to a temp zip file, reporting 0..=100 via `progress`.
-pub fn download(url: &str, progress: &mut dyn FnMut(u8)) -> Result<PathBuf, String> {
+/// One bounded download to `dest` (exclusive create), reporting
+/// 0..=100 via `progress`. Aborts when the body exceeds `max_bytes`
+/// even if the server lied about Content-Length.
+fn download(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    progress: &mut dyn FnMut(u8),
+) -> Result<(), String> {
     let mut resp = agent(300).get(url).call().map_err(|e| e.to_string())?;
     let total = resp.body().content_length().unwrap_or(0);
+    if total > max_bytes {
+        return Err(format!("download too large ({total} bytes)"));
+    }
 
-    let dest = std::env::temp_dir().join("aion-stabilizer-update.zip");
-    let mut out = fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(|e| e.to_string())?;
 
     let mut reader = resp.body_mut().as_reader();
     let mut buf = [0u8; 64 * 1024];
     let mut got = 0u64;
     let mut last_pct = 255u8;
     progress(0);
-    loop {
-        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+    let result = loop {
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => break Err(e.to_string()),
+        };
         if n == 0 {
-            break;
+            break Ok(());
         }
-        std::io::Write::write_all(&mut out, &buf[..n]).map_err(|e| e.to_string())?;
         got += n as u64;
+        if got > max_bytes {
+            break Err(format!("download exceeds limit ({max_bytes} bytes)"));
+        }
+        if let Err(e) = std::io::Write::write_all(&mut out, &buf[..n]) {
+            break Err(e.to_string());
+        }
         if total > 0 {
             let pct = (got * 100 / total).min(100) as u8;
             if pct != last_pct {
@@ -66,59 +110,83 @@ pub fn download(url: &str, progress: &mut dyn FnMut(u8)) -> Result<PathBuf, Stri
                 progress(pct);
             }
         }
+    };
+    drop(out);
+    match result {
+        Ok(()) if total > 0 && got != total => {
+            let _ = fs::remove_file(dest);
+            Err(format!("download truncated ({got}/{total} bytes)"))
+        }
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(dest);
+            Err(e)
+        }
     }
-    if total > 0 && got != total {
-        return Err(format!("download truncated ({got}/{total} bytes)"));
-    }
-    Ok(dest)
 }
 
-/// Extract the release zip into a fresh temp dir and return the folder
-/// that contains AionStabilizer.exe (top level or single subdir).
-pub fn extract(zip_path: &Path) -> Result<PathBuf, String> {
-    let file = fs::File::open(zip_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+/// Fetch, verify and apply a release end to end, then relaunch.
+/// On success the caller should exit; any failure leaves the current
+/// install untouched.
+pub fn run_update(
+    app_dir: &Path,
+    info: &ReleaseInfo,
+    progress: &mut dyn FnMut(u8),
+) -> Result<(), String> {
+    // Private staging: random name, exclusive create, admin-only ACL,
+    // pinned by an open handle until dropped. Prefer the machine temp
+    // dir (outside every user's reach); the ACL + pin still protect the
+    // tree when we have to fall back to the user temp dir.
+    let stage = sys::SecureStage::new(&sys::machine_temp_dir())
+        .or_else(|_| sys::SecureStage::new(&std::env::temp_dir()))?;
 
-    let dest = std::env::temp_dir().join(format!("aion-stabilizer-update-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dest);
-    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let Some(rel) = entry.enclosed_name() else {
-            continue; // skips absolute paths and .. traversal
-        };
-        let out = dest.join(&rel);
-        if entry.is_dir() {
-            fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-        } else {
-            if let Some(p) = out.parent() {
-                fs::create_dir_all(p).map_err(|e| e.to_string())?;
-            }
-            let mut w = fs::File::create(&out).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut w).map_err(|e| e.to_string())?;
-        }
+    // 1. signed manifest first - small, and no point downloading a zip
+    //    we cannot authenticate anyway
+    let manifest_path = stage.path().join("manifest.txt");
+    download(
+        &info.manifest_url,
+        &manifest_path,
+        manifest::MAX_MANIFEST_BYTES,
+        &mut |_| {},
+    )?;
+    let text = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+    let m = manifest::verify_manifest_pinned(&text)?;
+    if m.version != info.version {
+        return Err(format!(
+            "manifest version {} does not match release {}",
+            m.version, info.version
+        ));
+    }
+    let zip_base = info.zip_url.rsplit('/').next().unwrap_or_default();
+    if zip_base != m.zip_name {
+        return Err(format!("manifest is for {zip_base}, not {}", m.zip_name));
     }
 
-    if dest.join(APP_EXE).is_file() {
-        return Ok(dest);
+    // 2. the zip payload, byte-capped and hash-checked against the
+    //    signed manifest before it is even opened
+    let zip_path = stage.path().join("payload.zip");
+    download(&info.zip_url, &zip_path, manifest::MAX_DOWNLOAD_BYTES, progress)?;
+    if manifest::sha256_file(&zip_path)? != m.zip_sha256 {
+        return Err("downloaded zip does not match manifest hash".to_string());
     }
-    if let Ok(rd) = fs::read_dir(&dest) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() && p.join(APP_EXE).is_file() {
-                return Ok(p);
-            }
-        }
-    }
-    Err(format!("{APP_EXE} not found in the downloaded package"))
+
+    // 3. extract under hard limits inside the private dir, then prove
+    //    every extracted file is exactly what the manifest signed
+    let xdir = stage.path().join("x");
+    manifest::extract_zip_limited(&zip_path, &xdir, &manifest::ZIP_LIMITS)?;
+    let root = manifest::find_payload_root(&xdir)?;
+    manifest::verify_tree(&root, &m)?;
+
+    // 4. swap + relaunch (staging cleans itself up on drop)
+    apply(app_dir, &root)?;
+    relaunch(app_dir)
 }
 
 /// Swap `new_dir` contents into `app_dir`. Stages the new exe as `*.new`,
 /// renames the running exe to `*.old`, renames `*.new` into place, then
 /// copies everything else except KEEP files. On failure the running exe
 /// is restored.
-pub fn apply(app_dir: &Path, new_dir: &Path) -> Result<(), String> {
+fn apply(app_dir: &Path, new_dir: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let old_exe = exe.with_extension("exe.old");
     let staged = app_dir.join(format!("{APP_EXE}.new"));
@@ -143,7 +211,7 @@ pub fn apply(app_dir: &Path, new_dir: &Path) -> Result<(), String> {
 }
 
 /// Spawn the freshly installed exe and let the caller exit.
-pub fn relaunch(app_dir: &Path) -> Result<(), String> {
+fn relaunch(app_dir: &Path) -> Result<(), String> {
     Command::new(app_dir.join(APP_EXE))
         .arg("--updated")
         .spawn()
@@ -200,7 +268,12 @@ fn copy_tree_level(src: &Path, dst: &Path, top: bool) -> Result<(), String> {
         let name = e.file_name();
         let s = e.path();
         let d = dst.join(&name);
-        if s.is_dir() {
+        let ft = e.file_type().map_err(|e| e.to_string())?;
+        // reparse points/links must never be applied to the install
+        if ft.is_symlink() {
+            return Err(format!("refusing to copy link: {}", s.display()));
+        }
+        if ft.is_dir() {
             fs::create_dir_all(&d).map_err(|e| e.to_string())?;
             copy_tree_level(&s, &d, false)?;
             continue;

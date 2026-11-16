@@ -3,6 +3,7 @@
 mod controller;
 mod core;
 mod engine;
+mod manifest;
 mod procs;
 #[cfg(windows)]
 mod sys;

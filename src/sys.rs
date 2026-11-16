@@ -2,12 +2,22 @@
 
 #![cfg(windows)]
 
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::OnceLock;
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, HWND, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Services::*;
+use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -20,8 +30,177 @@ const MUTEX_NAME: &[u16] = &[
 ];
 const ERROR_ALREADY_EXISTS: u32 = 183;
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn wide_path(p: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    p.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+// ---------------- trusted system paths ----------------
+
+/// Absolute path of the Windows system directory (e.g. C:\Windows\System32)
+/// via the OS API - never PATH- or environment-derived.
+pub fn system_dir() -> PathBuf {
+    let mut buf = [0u16; 260];
+    unsafe {
+        let n = GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32);
+        if n > 0 && (n as usize) < buf.len() {
+            return PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]));
+        }
+    }
+    PathBuf::from(r"C:\Windows\System32")
+}
+
+/// Absolute path of a tool living in the Windows system directory
+/// (netsh.exe, sc.exe, ...). Use instead of a bare name so a hostile
+/// PATH cannot redirect the call.
+pub fn system_tool(exe: &str) -> PathBuf {
+    system_dir().join(exe)
+}
+
+/// Machine temp dir (e.g. C:\Windows\Temp). Its default ACL only allows
+/// admins/SYSTEM, so update staging under it is outside any
+/// unelevated user's reach. Falls back to the user temp dir.
+pub fn machine_temp_dir() -> PathBuf {
+    let mut buf = [0u16; 260];
+    unsafe {
+        let n = GetWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32);
+        if n > 0 && (n as usize) < buf.len() {
+            return PathBuf::from(String::from_utf16_lossy(&buf[..n as usize])).join("Temp");
+        }
+    }
+    std::env::temp_dir()
+}
+
+// ---------------- private update staging dir ----------------
+
+/// SDDL: protected DACL (no inheritance from the parent), full control
+/// for SYSTEM and the Administrators group only. An unelevated process
+/// of the same interactive user does not hold the Administrators SID in
+/// its filtered token, so it cannot open, write, or create anything
+/// inside the staging tree.
+const STAGE_SDDL: &str = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+fn stage_security_descriptor() -> Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR> {
+    unsafe {
+        let mut sd = ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide(STAGE_SDDL).as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            ptr::null_mut(),
+        ) != 0
+        {
+            Some(sd)
+        } else {
+            None
+        }
+    }
+}
+
+/// A staging directory that only elevated admins can touch.
+///
+/// - created exclusively under the machine temp dir with a random name
+///   and a restrictive ACL set atomically at creation (no
+///   world-writable window, no pre-created or squatted directory)
+/// - an open handle with sharing but no FILE_SHARE_DELETE is held for
+///   the whole update, so nothing can rename or delete the dir out
+///   from under the updater
+/// - children inherit the ACL, keeping the downloaded zip, manifest,
+///   and extraction tree private for the update's lifetime
+pub struct SecureStage {
+    dir: PathBuf,
+    hold: HANDLE,
+}
+
+impl SecureStage {
+    /// Create a private staging dir under `parent` (use machine_temp_dir).
+    pub fn new(parent: &std::path::Path) -> Result<Self, String> {
+        let Some(sd) = stage_security_descriptor() else {
+            return Err("cannot build staging security descriptor".to_string());
+        };
+        let result = Self::create(parent, sd);
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(sd as _);
+        }
+        result
+    }
+
+    fn create(
+        parent: &std::path::Path,
+        sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    ) -> Result<Self, String> {
+        const ERROR_ALREADY_EXISTS: u32 = 183;
+        let mut sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd as *mut _,
+            bInheritHandle: 0,
+        };
+        for _ in 0..64 {
+            let dir = parent.join(format!("aion-stabilizer-update-{}", rand_hex16()));
+            let w = wide_path(&dir);
+            unsafe {
+                if CreateDirectoryW(w.as_ptr(), &mut sa) == 0 {
+                    if GetLastError() == ERROR_ALREADY_EXISTS {
+                        continue;
+                    }
+                    return Err(format!(
+                        "cannot create staging dir {}: error {}",
+                        dir.display(),
+                        GetLastError()
+                    ));
+                }
+                // pin the dir: shared read/write, no delete
+                let hold = CreateFileW(
+                    w.as_ptr(),
+                    FILE_GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    ptr::null_mut(),
+                );
+                if hold.is_null() || hold == INVALID_HANDLE_VALUE {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err("cannot pin staging dir".to_string());
+                }
+                return Ok(Self { dir, hold });
+            }
+        }
+        Err("cannot create staging dir (name collision)".to_string())
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.dir
+    }
+}
+
+impl Drop for SecureStage {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.hold);
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn rand_hex16() -> String {
+    let mut b = [0u8; 8];
+    unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            b.as_mut_ptr(),
+            b.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        );
+    }
+    crate::manifest::hex_encode(&b)
 }
 
 /// Returns false when another instance already holds the mutex.

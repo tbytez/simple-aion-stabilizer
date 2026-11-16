@@ -41,5 +41,22 @@ cp "$HERE/assets/lists/ipset-all.txt" "$OUT/lists/ipset-all.txt"
 echo "==> Creating $ZIP"
 (cd "$HERE/dist" && zip -qry "$(basename "$ZIP")" "$(basename "$OUT")")
 
+# Signed update manifest - the updater refuses a release without it.
+# Key lives outside git (release-keys/, gitignored); point AION_UPDATE_KEY
+# at another private-key file to override.
+KEY="${AION_UPDATE_KEY:-$HERE/release-keys/update-private.key}"
+MANIFEST="$HERE/dist/${APP}-v${VERSION}-manifest.txt"
+rm -f "$MANIFEST"
+if [ -f "$KEY" ]; then
+    echo "==> Signing update manifest"
+    cargo run -q -p sign-manifest --manifest-path "$HERE/Cargo.toml" -- \
+        sign "$OUT" --key "$KEY" --zip "$ZIP" --out "$MANIFEST"
+else
+    echo "!! No signing key at $KEY - update manifest NOT produced."
+    echo "!! The updater will refuse this release until it is signed."
+    echo "!! Generate a keypair:  cargo run -p sign-manifest -- generate release-keys"
+    echo "!! then pin the printed public key in src/manifest.rs UPDATE_PUBLIC_KEY."
+fi
+
 echo "==> Done"
-ls -lh "$ZIP"
+ls -lh "$ZIP" "$MANIFEST" 2>/dev/null || ls -lh "$ZIP"

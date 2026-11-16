@@ -2,3 +2,7 @@
 /release-build/
 /dist/
 *.zip
+
+# update signing keys must never be committed
+release-keys/
+*.key

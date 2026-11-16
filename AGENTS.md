@@ -35,9 +35,23 @@ with manifest + icon).
 zapret-discord-youtube bundle) + `lists\` (their lists + list-aion.txt +
 ipset-all.txt). App resolves everything relative to its own exe path.
 
-In-app updater (src/update.rs): checks GitHub `releases/latest`, expects a
-release asset named `*-win64.zip` containing the folder above. Update swaps
-files in place (rename-running-exe trick), preserves `config.ini` +
-`profile.txt`, relaunches with `--updated`. Engine stop also stops+deletes
-the WinDivert service (winws is killed hard, so its WinDivertClose never
-runs) - keeps bin\WinDivert64.sys deletable without a reboot.
+In-app updater (src/update.rs): checks GitHub `releases/latest`, requires
+both `*-win64.zip` and its sibling `*-manifest.txt` asset (same stem).
+The manifest (src/manifest.rs, shared with tools/sign-manifest via
+#[path]) is a signed text file: Ed25519 signature over the zip sha256 +
+sha256/size of every payload file; public key pinned in
+UPDATE_PUBLIC_KEY (placeholder until release keys are provisioned - see
+RELEASING.md, updater fails closed). Downloads are byte-capped; the zip
+is extracted under entry/size/count limits into a private ACL'd
+exclusively-created staging dir under %WINDIR%\Temp that is pinned open
+(no FILE_SHARE_DELETE) for the update's lifetime. netsh/sc and other
+system tools are invoked by absolute System32 path (sys::system_tool,
+same in uninstall.cmd). Update swaps files in place (rename-running-exe
+trick), preserves `config.ini` + `profile.txt`, relaunches with
+`--updated`. Engine stop also stops+deletes the WinDivert service (winws
+is killed hard, so its WinDivertClose never runs) - keeps
+bin\WinDivert64.sys deletable without a reboot.
+
+Signing tool: `cargo run -p sign-manifest -- generate|sign|verify|check`
+(see RELEASING.md). Private keys live in release-keys/ - gitignored,
+never commit.
