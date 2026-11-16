@@ -62,13 +62,13 @@ If files are still locked, run `uninstall.cmd` as administrator first.
 
 ## Antivirus reports
 
-Avast has been reported to flag `AionStabilizer.exe` from v0.1.3. The
-cause and clearance are not yet verified. Windows version metadata and
-signed update manifests identify the release; the manifest signature is
-not an Authenticode publisher certificate and does not guarantee antivirus
-acceptance. Do not disable antivirus protection to install the app.
-Report the detected file and detection name through
-[Avast's sample review form](https://www.avast.com/submit-a-sample).
+Avast may send an unfamiliar executable to its Threat Labs through
+[CyberCapture](https://support.avast.com/avast/en/ww/home/current/solutions/antivirus-cybercapture).
+"Sent for analysis" is a pending review, not a final malware verdict.
+Wait for Avast's result. New builds may undergo analysis again; no release
+can guarantee skipping that process. Windows version metadata and signed
+update manifests identify the release, but the manifest signature is not
+an Authenticode publisher certificate or antivirus clearance.
 
 ## Planned
 
