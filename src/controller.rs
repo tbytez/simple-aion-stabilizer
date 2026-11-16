@@ -25,8 +25,31 @@ pub enum Cmd {
 #[derive(Clone)]
 pub enum UpdateState {
     Available,
-    Working(u8),
+    Downloading(u8),
+    Verifying,
+    Installing,
     Failed(String),
+}
+
+impl UpdateState {
+    /// True while an update is downloading or being applied - blocks
+    /// engine (re)starts and re-entry into the updater.
+    fn busy(&self) -> bool {
+        matches!(
+            self,
+            UpdateState::Downloading(_) | UpdateState::Verifying | UpdateState::Installing
+        )
+    }
+}
+
+/// Feedback for the manual "check for updates" button.
+#[derive(Clone, Default)]
+pub enum CheckState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Failed,
 }
 
 #[derive(Clone)]
@@ -49,6 +72,7 @@ pub struct Status {
     pub autostart: bool,
     pub error: Option<String>,
     pub update: Option<UpdateInfo>,
+    pub check: CheckState,
 }
 
 #[derive(Clone)]
@@ -104,31 +128,64 @@ fn save_config(app_dir: &Path, key: &str, value: &str) {
     let _ = std::fs::write(&path, core::config_set(&text, key, value));
 }
 
-/// GitHub release check on a worker thread; silent when it fails or the
-/// app is current.
+/// GitHub release check on a worker thread. Reports Checking/UpToDate/
+/// Failed in `status.check`; a found release goes to `status.update`.
 #[cfg(windows)]
 fn check_for_update(status: Arc<Mutex<Status>>, wake: Arc<dyn Fn() + Send + Sync>) {
-    std::thread::spawn(move || {
-        if let Ok(Some(rel)) = crate::update::check_latest() {
-            if let Ok(mut s) = status.lock() {
-                // never clobber an in-progress download
-                let busy = matches!(s.update.as_ref().map(|u| &u.state), Some(UpdateState::Working(_)));
-                if !busy {
-                    s.update = Some(UpdateInfo {
-                        version: rel.version,
-                        zip_url: rel.zip_url,
-                        manifest_url: rel.manifest_url,
-                        state: UpdateState::Available,
-                    });
-                }
-            }
-            wake();
+    if let Ok(mut s) = status.lock() {
+        if matches!(s.check, CheckState::Checking) {
+            return;
         }
+        s.check = CheckState::Checking;
+    }
+    wake();
+    std::thread::spawn(move || {
+        let next = match crate::update::check_latest() {
+            Ok(Some(rel)) => {
+                if let Ok(mut s) = status.lock() {
+                    // never clobber an in-progress download
+                    let busy = s.update.as_ref().is_some_and(|u| u.state.busy());
+                    if !busy {
+                        s.update = Some(UpdateInfo {
+                            version: rel.version,
+                            zip_url: rel.zip_url,
+                            manifest_url: rel.manifest_url,
+                            state: UpdateState::Available,
+                        });
+                    }
+                }
+                CheckState::Idle
+            }
+            Ok(None) => CheckState::UpToDate,
+            Err(_) => CheckState::Failed,
+        };
+        if let Ok(mut s) = status.lock() {
+            s.check = next;
+        }
+        wake();
     });
 }
 
+/// Preview build: no real updater - simulate a quick check.
+/// AION_FAKE_CHECK=failed previews the failure state.
 #[cfg(not(windows))]
-fn check_for_update(_status: Arc<Mutex<Status>>, _wake: Arc<dyn Fn() + Send + Sync>) {}
+fn check_for_update(status: Arc<Mutex<Status>>, wake: Arc<dyn Fn() + Send + Sync>) {
+    if let Ok(mut s) = status.lock() {
+        s.check = CheckState::Checking;
+    }
+    wake();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(600));
+        if let Ok(mut s) = status.lock() {
+            s.check = if std::env::var("AION_FAKE_CHECK").as_deref() == Ok("failed") {
+                CheckState::Failed
+            } else {
+                CheckState::UpToDate
+            };
+        }
+        wake();
+    });
+}
 
 /// Stop the engine (it holds file locks) and hand the update to a worker.
 #[cfg(windows)]
@@ -142,14 +199,14 @@ fn apply_update_now(
         .lock()
         .ok()
         .and_then(|s| s.update.clone())
-        .filter(|i| !matches!(i.state, UpdateState::Working(_)));
+        .filter(|i| !i.state.busy());
     let Some(info) = info else { return };
     engine.stop();
     if let Ok(mut s) = status.lock() {
         s.running = false;
         s.auto_started = false;
         if let Some(u) = &mut s.update {
-            u.state = UpdateState::Working(0);
+            u.state = UpdateState::Downloading(0);
         }
     }
     wake();
@@ -175,13 +232,18 @@ fn apply_update(
     status: Arc<Mutex<Status>>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
-    let mut on_pct = {
+    let mut on_progress = {
         let status = status.clone();
         let wake = wake.clone();
-        move |pct: u8| {
+        move |p: crate::update::Progress| {
+            let state = match p {
+                crate::update::Progress::Download(pct) => UpdateState::Downloading(pct),
+                crate::update::Progress::Verify => UpdateState::Verifying,
+                crate::update::Progress::Install => UpdateState::Installing,
+            };
             if let Ok(mut s) = status.lock() {
                 if let Some(u) = &mut s.update {
-                    u.state = UpdateState::Working(pct);
+                    u.state = state;
                 }
             }
             wake();
@@ -193,7 +255,7 @@ fn apply_update(
         zip_url: info.zip_url.clone(),
         manifest_url: info.manifest_url.clone(),
     };
-    let result = crate::update::run_update(&app_dir, &rel, &mut on_pct);
+    let result = crate::update::run_update(&app_dir, &rel, &mut on_progress);
 
     match result {
         Ok(()) => std::process::exit(0),
@@ -277,7 +339,9 @@ fn run(
     #[cfg(not(windows))]
     if let Ok(fake) = std::env::var("AION_FAKE_UPDATE") {
         let state = match fake.as_str() {
-            "working" | "downloading" => UpdateState::Working(42),
+            "working" | "downloading" => UpdateState::Downloading(42),
+            "verifying" => UpdateState::Verifying,
+            "installing" => UpdateState::Installing,
             "failed" | "fail" => UpdateState::Failed("mock failure".into()),
             _ => UpdateState::Available,
         };
@@ -297,7 +361,7 @@ fn run(
         // would re-lock the winws/WinDivert files the swap needs to write
         let updating = status
             .lock()
-            .map(|s| matches!(s.update.as_ref().map(|u| &u.state), Some(UpdateState::Working(_))))
+            .map(|s| s.update.as_ref().is_some_and(|u| u.state.busy()))
             .unwrap_or(false);
 
         match rx.recv_timeout(Duration::from_millis(400)) {

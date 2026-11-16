@@ -29,6 +29,7 @@ mkdir -p "$OUT"
 cp "$EXE" "$OUT/AionStabilizer.exe"
 cp "$HERE/assets/profile.txt" "$OUT/profile.txt"
 cp "$HERE/assets/uninstall.cmd" "$OUT/uninstall.cmd"
+cp "$HERE/assets/update-recovery.cmd" "$OUT/update-recovery.cmd"
 cp "$HERE/README.md" "$HERE/LICENSE" "$HERE/THIRD_PARTY_NOTICES.txt" "$OUT/"
 
 # zapret engine binaries

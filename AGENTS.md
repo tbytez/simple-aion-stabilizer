@@ -46,11 +46,22 @@ is extracted under entry/size/count limits into a private ACL'd
 exclusively-created staging dir under %WINDIR%\Temp that is pinned open
 (no FILE_SHARE_DELETE) for the update's lifetime. netsh/sc and other
 system tools are invoked by absolute System32 path (sys::system_tool,
-same in uninstall.cmd). Update swaps files in place (rename-running-exe
-trick), preserves `config.ini` + `profile.txt`, relaunches with
-`--updated`. Engine stop also stops+deletes the WinDivert service (winws
-is killed hard, so its WinDivertClose never runs) - keeps
-bin\WinDivert64.sys deletable without a reboot.
+same in uninstall.cmd). The swap is delegated to the staged new exe
+(`--finish-update <stage_dir>`): it takes the instance mutex (proving
+the old app exited), copies all payload files while the old exe is
+still in place, swaps the exe last via rename-running-exe trick, then
+relaunches with `--updated` - so closing/killing the app mid-update
+can't break the install. `update-recovery.cmd` (ships in the zip)
+restores the exe from `*.new`/`*.old` after a catastrophic kill.
+Preserves `config.ini` + `profile.txt`. Engine stop also stops+deletes
+the WinDivert service (winws is killed hard, so its WinDivertClose
+never runs) - keeps bin\WinDivert64.sys deletable without a reboot.
+
+## Release naming
+
+GitHub release title AND tag are exactly `v<semver>` (e.g. `v0.1.3`) -
+no suffixes, descriptions, or extra text in the title. Detail belongs
+in the release notes body.
 
 Signing tool: `cargo run -p sign-manifest -- generate|sign|verify|check`
 (see RELEASING.md). Private keys live in release-keys/ - gitignored,

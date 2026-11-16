@@ -26,6 +26,16 @@ fn main() {
 
     #[cfg(windows)]
     {
+        // headless update-helper mode: the staged new exe finishes the
+        // file swap after the old app exits - no mutex, no window
+        if let Some(i) = args.iter().position(|a| a == "--finish-update") {
+            let code = args
+                .get(i + 1)
+                .map(|d| update::finish_update(std::path::Path::new(d)))
+                .unwrap_or(1);
+            std::process::exit(code);
+        }
+
         // the updater relaunches us while the old process may still be
         // exiting - retry the mutex briefly before giving up
         let start_updated = args.iter().any(|a| a == "--updated");
@@ -42,6 +52,7 @@ fn main() {
             return;
         }
         update::cleanup_old_files();
+        update::cleanup_stale_stages();
     }
 
     let app_dir = std::env::current_exe()

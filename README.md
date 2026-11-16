@@ -50,6 +50,8 @@ The app checks GitHub for a newer release on start and offers a
 one-click in-place update (it keeps your `config.ini` and `profile.txt`).
 Updates install only after a signed manifest verifies every payload
 file. Disable the check with `update_check=0` in `config.ini`.
+If an update is ever interrupted so hard that `AionStabilizer.exe`
+disappears, run `update-recovery.cmd` in the app folder to restore it.
 
 To remove the app: quit it from the tray (stopping the engine also
 unloads the WinDivert driver), then delete the folder - no reboot needed.

@@ -50,7 +50,9 @@ cargo run -p sign-manifest -- generate release-keys
 
    `verify` proves the signature; `check` proves the zip contents are
    exactly the signed files.
-4. Create the GitHub release tag `v<ver>` and upload BOTH assets:
+4. Create the GitHub release: tag `v<ver>` and title exactly `v<ver>`
+   (no suffixes or extra text in the title - details go in the notes
+   body) and upload BOTH assets:
    - `SimpleAionStabilizer-v<ver>-win64.zip`
    - `SimpleAionStabilizer-v<ver>-manifest.txt`
 

@@ -1,7 +1,7 @@
 //! Custom-painted egui UI: frameless window, glowing power button, toggle
 //! switches, dark/light palettes following the Windows theme.
 
-use crate::controller::{Cmd, Controller, Status, UpdateInfo, UpdateState};
+use crate::controller::{CheckState, Cmd, Controller, Status, UpdateInfo, UpdateState};
 use crate::theme::{self, Palette};
 use egui::{
     vec2, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Mesh, Pos2, Rect,
@@ -102,16 +102,18 @@ impl eframe::App for App {
         self.paint_title_bar(ui, rect, pal);
         let mut y = rect.min.y + TITLE_H + MARGIN;
         y = self.paint_hero(ui, rect, y, pal);
-        if let Some(err) = self.visible_error() {
-            y += 10.0;
-            y = self.paint_error(ui, rect, y, err.to_string(), pal);
-        } else if let Some(upd) = self.status.update.clone() {
-            y += 10.0;
-            y = self.paint_update(ui, rect, y, &upd, pal);
-        }
-        y += 12.0;
+        y += 8.0;
         let _ = self.paint_settings(ui, rect, y, pal);
-        self.paint_footer(ui, rect, pal);
+
+        // error/update banners are a docked bottom strip - they never
+        // push the cards or squeeze the footer out of the window
+        if let Some(err) = self.visible_error() {
+            self.paint_error_strip(ui, rect, err.to_string(), pal);
+        } else if let Some(upd) = self.status.update.clone() {
+            self.paint_update_strip(ui, rect, &upd, pal);
+        } else {
+            self.paint_footer(ui, rect, pal);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -157,6 +159,15 @@ impl App {
             "AION STABILIZER",
             FontId::new(11.5, FontFamily::Name("sb".into())),
             pal.dim,
+        );
+
+        // version, right-aligned ahead of the window buttons
+        p.text(
+            Pos2::new(bar.max.x - 84.0 - 10.0, bar.center().y),
+            Align2::RIGHT_CENTER,
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            FontId::new(10.0, FontFamily::Proportional),
+            pal.dim.gamma_multiply(0.8),
         );
 
         // window buttons (both hide to tray: "-" and "x")
@@ -367,23 +378,23 @@ impl App {
         );
     }
 
-    // ---------------- error banner ----------------
+    // ---------------- bottom status strips ----------------
 
-    fn paint_error(
-        &mut self,
-        ui: &mut egui::Ui,
-        win: Rect,
-        y: f32,
-        msg: String,
-        pal: Palette,
-    ) -> f32 {
+    /// Rect of the strip docked at the bottom edge (replaces the footer
+    /// hint while shown - it is an overlay, never a layout shift).
+    fn strip_rect(win: Rect) -> Rect {
+        Rect::from_min_size(Pos2::new(win.min.x, win.max.y - 30.0), vec2(win.width(), 30.0))
+    }
+
+    fn paint_error_strip(&mut self, ui: &mut egui::Ui, win: Rect, msg: String, pal: Palette) {
         let ctx = ui.ctx().clone();
-        let rect = Rect::from_min_size(
-            Pos2::new(win.min.x + MARGIN, y),
-            vec2(win.width() - 2.0 * MARGIN, 40.0),
-        );
+        let rect = Self::strip_rect(win);
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(10), pal.danger_bg);
+            .rect_filled(rect, CornerRadius::ZERO, pal.danger_bg);
+        ui.painter().line_segment(
+            [rect.left_top(), rect.right_top()],
+            Stroke::new(1.0, pal.danger.gamma_multiply(0.4)),
+        );
         ui.painter().circle_stroke(
             Pos2::new(rect.min.x + 16.0, rect.center().y),
             6.0,
@@ -397,9 +408,9 @@ impl App {
             pal.danger,
         );
         ui.painter().text(
-            Pos2::new(rect.min.x + 30.0, rect.center().y),
+            Pos2::new(rect.min.x + 28.0, rect.center().y),
             Align2::LEFT_CENTER,
-            truncate(&msg, 42),
+            truncate(&msg, 44),
             FontId::new(11.0, FontFamily::Name("md".into())),
             pal.danger,
         );
@@ -421,31 +432,16 @@ impl App {
         if r.clicked() {
             self.dismissed_error = self.status.error.clone();
         }
-        rect.max.y
     }
 
-    // ---------------- update banner ----------------
-
-    fn paint_update(
-        &mut self,
-        ui: &mut egui::Ui,
-        win: Rect,
-        y: f32,
-        upd: &UpdateInfo,
-        pal: Palette,
-    ) -> f32 {
+    fn paint_update_strip(&mut self, ui: &mut egui::Ui, win: Rect, upd: &UpdateInfo, pal: Palette) {
         let ctx = ui.ctx().clone();
-        let rect = Rect::from_min_size(
-            Pos2::new(win.min.x + MARGIN, y),
-            vec2(win.width() - 2.0 * MARGIN, 40.0),
-        );
+        let rect = Self::strip_rect(win);
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(10), pal.chip_bg);
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(10),
+            .rect_filled(rect, CornerRadius::ZERO, pal.chip_bg);
+        ui.painter().line_segment(
+            [rect.left_top(), rect.right_top()],
             Stroke::new(1.0, pal.accent_a.gamma_multiply(0.55)),
-            StrokeKind::Inside,
         );
 
         // up arrow icon
@@ -467,21 +463,25 @@ impl App {
 
         let (msg, action) = match &upd.state {
             UpdateState::Available => (format!("v{} available", upd.version), Some("UPDATE")),
-            UpdateState::Working(p) => (format!("Downloading update... {p}%"), None),
+            UpdateState::Downloading(p) => (format!("Downloading update... {p}%"), None),
+            UpdateState::Verifying => ("Verifying update...".to_string(), None),
+            UpdateState::Installing => {
+                ("Installing update - app will restart".to_string(), None)
+            }
             UpdateState::Failed(e) => (format!("Update failed: {e}"), Some("RETRY")),
         };
         ui.painter().text(
-            Pos2::new(rect.min.x + 30.0, rect.center().y),
+            Pos2::new(rect.min.x + 28.0, rect.center().y),
             Align2::LEFT_CENTER,
-            truncate(&msg, 32),
+            truncate(&msg, 40),
             FontId::new(11.0, FontFamily::Name("md".into())),
             pal.text,
         );
 
         if let Some(label) = action {
             let btn = Rect::from_center_size(
-                Pos2::new(rect.max.x - 36.0, rect.center().y),
-                vec2(56.0, 24.0),
+                Pos2::new(rect.max.x - 42.0, rect.center().y),
+                vec2(56.0, 20.0),
             );
             let r = ui.allocate_rect(btn, Sense::click());
             if r.hovered() {
@@ -489,7 +489,7 @@ impl App {
             }
             ui.painter().rect_filled(
                 btn,
-                CornerRadius::same(12),
+                CornerRadius::same(10),
                 if r.hovered() {
                     pal.accent_a
                 } else {
@@ -500,14 +500,13 @@ impl App {
                 btn.center(),
                 Align2::CENTER_CENTER,
                 label,
-                FontId::new(9.5, FontFamily::Name("sb".into())),
+                FontId::new(9.0, FontFamily::Name("sb".into())),
                 Color32::WHITE,
             );
             if r.clicked() {
                 self.ctrl.send(Cmd::ApplyUpdate);
             }
         }
-        rect.max.y
     }
 
     // ---------------- settings card ----------------
@@ -516,7 +515,7 @@ impl App {
         let ctx = ui.ctx().clone();
         let rect = Rect::from_min_size(
             Pos2::new(win.min.x + MARGIN, y),
-            vec2(win.width() - 2.0 * MARGIN, 178.0),
+            vec2(win.width() - 2.0 * MARGIN, 208.0),
         );
         ui.painter()
             .rect_filled(rect, CornerRadius::same(16), pal.card);
@@ -604,6 +603,74 @@ impl App {
                 ctx.request_repaint_after(Duration::from_millis(120));
             }
             ry += 42.0;
+        }
+
+        // updates row: installed version / check state + manual CHECK
+        let row = Rect::from_min_size(
+            Pos2::new(rect.min.x + 12.0, ry),
+            vec2(rect.width() - 24.0, 42.0),
+        );
+        let hr = ui.interact(row, ui.scope_id().with("updates"), Sense::hover());
+        if hr.hovered() {
+            ui.painter()
+                .rect_filled(row, CornerRadius::same(10), pal.btn_hover);
+        }
+        ui.painter().text(
+            Pos2::new(row.min.x + 8.0, row.min.y + 12.0),
+            Align2::LEFT_CENTER,
+            "Updates",
+            FontId::new(13.0, FontFamily::Name("md".into())),
+            pal.text,
+        );
+        let checking = matches!(self.status.check, CheckState::Checking);
+        let sub = if let Some(u) = &self.status.update {
+            format!("v{} available", u.version)
+        } else {
+            match self.status.check {
+                CheckState::Checking => "Checking...".to_string(),
+                CheckState::UpToDate => "Latest version installed".to_string(),
+                CheckState::Failed => "Check failed - try again".to_string(),
+                CheckState::Idle => concat!("v", env!("CARGO_PKG_VERSION"), " installed").to_string(),
+            }
+        };
+        ui.painter().text(
+            Pos2::new(row.min.x + 8.0, row.min.y + 29.0),
+            Align2::LEFT_CENTER,
+            sub,
+            FontId::new(10.5, FontFamily::Proportional),
+            pal.dim,
+        );
+
+        // CHECK pill button (dimmed while a check is in flight)
+        let btn = Rect::from_center_size(
+            Pos2::new(row.max.x - 34.0, row.center().y),
+            vec2(52.0, 22.0),
+        );
+        let r = ui.allocate_rect(btn, Sense::click());
+        let alpha = if checking {
+            0.35
+        } else if r.hovered() {
+            1.0
+        } else {
+            0.8
+        };
+        if r.hovered() && !checking {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+        ui.painter().rect_filled(
+            btn,
+            CornerRadius::same(11),
+            pal.accent_a.gamma_multiply(alpha),
+        );
+        ui.painter().text(
+            btn.center(),
+            Align2::CENTER_CENTER,
+            "CHECK",
+            FontId::new(9.0, FontFamily::Name("sb".into())),
+            Color32::WHITE,
+        );
+        if r.clicked() && !checking {
+            self.ctrl.send(Cmd::CheckUpdate);
         }
         rect.max.y
     }

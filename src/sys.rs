@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::ptr;
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, HANDLE, HWND, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -211,6 +211,36 @@ pub fn acquire_single_instance() -> bool {
             return true; // cannot tell - don't block the user
         }
         GetLastError() != ERROR_ALREADY_EXISTS
+    }
+}
+
+/// Block until the instance mutex is owned or `timeout` expires.
+/// Used by `--finish-update`: acquiring it proves the previous instance
+/// exited AND keeps any new launch from starting during the file swap.
+/// WAIT_ABANDONED counts as acquired - that is exactly the dead-process
+/// case we are waiting for. Pass the handle to release_mutex when done.
+pub fn wait_instance_mutex(timeout: std::time::Duration) -> Option<HANDLE> {
+    unsafe {
+        let h = CreateMutexW(ptr::null(), 0, MUTEX_NAME.as_ptr());
+        if h.is_null() {
+            return None;
+        }
+        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        match WaitForSingleObject(h, ms) {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(h),
+            _ => {
+                CloseHandle(h);
+                None
+            }
+        }
+    }
+}
+
+/// Release ownership of the instance mutex and close the handle.
+pub fn release_mutex(h: HANDLE) {
+    unsafe {
+        ReleaseMutex(h);
+        CloseHandle(h);
     }
 }
 
