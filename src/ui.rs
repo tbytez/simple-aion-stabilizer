@@ -307,7 +307,7 @@ impl App {
                 }
             });
             ui.collapsing(RichText::new("Connection help").size(12.0).color(pal.dim), |ui| {
-                ui.label("If login fails, stop the engine and retry. A running engine does not confirm game connectivity.");
+                ui.label("Start the engine before opening Aion, or enable Start engine on app open. Game detection starts only after the game opens. The default follows AXV’s compatibility rules with targeted game TCP. Broad game UDP injection is disabled. If login fails, stop the engine and retry. A running engine does not confirm game connectivity.");
             });
         });
     }

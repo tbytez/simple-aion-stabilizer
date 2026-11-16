@@ -30,10 +30,10 @@ These tests verify logical layout, font tessellation, and input handling.
 They do not establish perceived text sharpness, frame timing, Win32 window
 placement, or performance on Windows hardware.
 
-Profile tests cover stock-profile migration (including CRLF), original
+Profile tests cover stock-profile migration (including BOM/CRLF), original
 backup, repeated loads, custom-profile preservation, conflicting backups,
-and the absence of UDP, unknown-protocol, global-IP-set, fake-packet and
-sequence-overlap rules in the new default.
+and the current AXV-reference rules described below. The v0.1.6/v0.1.7
+web-only default has been superseded by the v0.1.8 candidate.
 
 ## Runtime checks still required on Windows
 
@@ -51,7 +51,9 @@ sequence-overlap rules in the new default.
   auto-start must stay off until the game is observed to have exited.
 - On an installation upgraded from v0.1.5, start once and check that
   profile.pre-domain-scope.txt contains the old profile and profile.txt
-  now matches the new domain-scoped default. Custom profiles stay intact.
+  matches the current AXV-reference default. From v0.1.6/v0.1.7, check
+  profile.pre-aion-tcp.txt instead. Existing backups are retained, with
+  numbered names when necessary. Custom profiles stay intact.
 - On the reported EU / WE Egypt connection, compare a fresh login with
   engine stopped versus started. Stop between attempts and reconnect so
   the engine sees the beginning of each connection. Test character entry
@@ -88,3 +90,69 @@ Also test starting a second instance during the handoff, a temporarily locked
 backup executable, and an interrupted helper. Startup cleanup must skip live
 update payloads. A genuine install failure must show an error and log the
 reason rather than silently presenting the old version as an updated app.
+
+## v0.1.8 native monitor-boundary fix
+
+The prior layout tests did not execute the Win32 WM_DPICHANGED handler.
+This build backports upstream winit PR #4341 to the vendored stable 0.30.13
+source. Windows 11 uses the suggested rectangle directly instead of the
+legacy monitor-nudging algorithm; known Windows 10 builds keep that algorithm.
+The DPI value and font/surface updates still reach eframe normally.
+
+Three additional host tests execute the exact portable policy called by the
+patched native handler. They cover modern/unknown Windows builds bypassing
+legacy adjustment, Windows 10 retaining it, negative and vertically staggered
+rectangles, and 256 back-and-forth 100%/125% cycles with no extra geometry
+changes. These are policy tests, not a substitute for native dragging.
+
+Required Windows reproduction uses the reported displays: 2560x1440 at 100%
+and 2560x1600 at 125%. Drag by hand (a programmatic move does not exercise the
+same native move loop), in both directions, grabbing the left, center and
+right of the title bar. Pause with the window straddling the boundary; it
+must stop resizing and flickering while the pointer is stationary. Repeat
+from a maximized window, after manual resizing, and with monitors arranged
+above/below or at negative desktop coordinates. Check that returning to the
+same monitor preserves the logical client size apart from pixel rounding,
+and that text and hit targets remain sharp and aligned. Also test changing
+Display Settings scaling while the app is open and Win+Shift+Arrow transfers.
+
+The native tests require a Windows machine with multiple monitors; they
+cannot run in the macOS cross-compilation environment.
+
+## v0.1.8 AXV-reference network profile
+
+The Aion defaults now follow the effective AXV v1.0.0 profile reported working
+by the user on WE Egypt: general.bat in TCP game mode, two included IP ranges,
+the same host/CDN compatibility rules and split parameters, with the inactive
+UDP-12 game rule omitted. See AXV-INVESTIGATION.md for source paths, hashes,
+binary comparisons and the explicit remaining differences.
+
+Profile tests verify migration of v0.1.6/v0.1.7's web-only stock file, backup
+preservation, target-list validation, the actual engine argument-building path,
+IP scope for unknown-protocol TCP, absence of unknown-protocol UDP injection,
+and preservation of edited targets during updates.
+
+For runtime validation, fully quit AXV and other winws instances before
+starting this app. Start the engine before opening Aion. Repeat fresh logins
+and character entry on the same region/WE connection that works with AXV's
+unchanged default, and compare engine.log arguments with the inspected profile.
+These tests cannot run on the macOS build machine. The native monitor-boundary
+fix remains included and still requires a real mixed-DPI hand-drag test.
+
+## Additional pre-release audit fixes
+
+- Re-read update state before the game watcher considers restarting the engine.
+  ApplyUpdate must not restart winws in the same command-loop iteration.
+- Publish profile changes atomically, retain conflicting prior backups under
+  numbered names, tolerate stale temporary files, and support UTF-8 BOM files.
+- Initialize RtlGetVersion's input structure size before using its build number
+  to select the legacy versus Windows 11 DPI rectangle handling.
+- Recovery prefers the previous executable when both .old and .new exist; a .new
+  file may have been moved aside after failing post-install verification.
+- Package validation rejects missing/empty dependencies and unexpected backend
+  binaries. Cargo.lock and the package target directory are fixed explicitly.
+
+The game watcher is detection-based, so it can start after a connection already
+began. For AXV-equivalent login validation, start the engine before Aion or use
+Start engine on app open. Test watcher timing separately rather than assuming
+it is equivalent to pre-launch startup.

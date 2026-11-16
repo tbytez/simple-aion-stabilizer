@@ -2,8 +2,10 @@
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     #[allow(unused_mut)]
-    let mut config = eframe::egui_wgpu::WgpuConfiguration::default();
-    config.surface = eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY;
+    let mut config = eframe::egui_wgpu::WgpuConfiguration {
+        surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
+        ..Default::default()
+    };
     #[cfg(windows)]
     {
         use eframe::egui_wgpu::{wgpu, WgpuSetup, WgpuSetupCreateNew};

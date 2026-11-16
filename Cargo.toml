@@ -1,6 +1,6 @@
 [package]
 name = "aion-stabilizer"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 build = "build.rs"
 description = "Simple tray-based Aion connection stabilizer for Windows (zapret/winws frontend)"
@@ -9,6 +9,7 @@ repository = "https://github.com/tbytez/simple-aion-stabilizer"
 
 [workspace]
 members = [".", "tools/sign-manifest"]
+exclude = ["vendor/winit"]
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "accesskit"] }
@@ -47,3 +48,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Temporary backport of upstream winit#4341 to the stable 0.30 line.
+# Remove when a compatible published release includes the native DPI fix.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

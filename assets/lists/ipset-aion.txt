@@ -1,0 +1,4 @@
+# Destinations supplied by AXV v1.0.0's AION 2 working configuration.
+# These are a starting point, not a complete or permanent Aion server list.
+193.202.112.0/24
+34.117.142.0/24

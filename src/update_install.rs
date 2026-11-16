@@ -82,11 +82,11 @@ fn swap_executable(
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
-    copy_tree_level(src, dst, true)
+    copy_tree_level(src, dst, dst, true)
 }
 
 /// `top` marks the app root, where user-editable KEEP files are skipped.
-fn copy_tree_level(src: &Path, dst: &Path, top: bool) -> Result<(), String> {
+fn copy_tree_level(src: &Path, dst: &Path, install_root: &Path, top: bool) -> Result<(), String> {
     let rd = fs::read_dir(src).map_err(|e| e.to_string())?;
     for e in rd {
         let e = e.map_err(|e| e.to_string())?;
@@ -100,12 +100,19 @@ fn copy_tree_level(src: &Path, dst: &Path, top: bool) -> Result<(), String> {
         }
         if ft.is_dir() {
             fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-            copy_tree_level(&s, &d, false)?;
+            copy_tree_level(&s, &d, install_root, false)?;
             continue;
         }
         let fname = name.to_string_lossy();
         // at the app root skip user-editable files and the already-staged exe
         if top && (KEEP.contains(&fname.as_ref()) || fname == APP_EXE) {
+            continue;
+        }
+        // Aion destinations are editable connection configuration. Install
+        // the default on first update, but retain an existing edited list.
+        if d.is_file()
+            && d.strip_prefix(install_root).ok() == Some(Path::new("lists/ipset-aion.txt"))
+        {
             continue;
         }
         // skip untouched files - avoids touching the WinDivert driver
@@ -274,6 +281,67 @@ mod tests {
         let f = Fixture::new();
         assert!(verify_helper_version(&f.manifest, "9.0.0").is_ok());
         assert!(verify_helper_version(&f.manifest, "8.0.0").is_err());
+    }
+    #[test]
+    fn update_preserves_existing_aion_targets_but_installs_missing_list() {
+        for existing in [false, true] {
+            let mut f = Fixture::new();
+            let (staged, installed, old) = f.paths();
+            fs::create_dir(f.root.join("lists")).unwrap();
+            fs::write(f.root.join("lists/ipset-aion.txt"), b"193.202.112.0/24\n").unwrap();
+            f.manifest.files = manifest::files_in_tree(&f.root).unwrap();
+            if existing {
+                fs::create_dir(f.install.join("lists")).unwrap();
+                fs::write(f.install.join("lists/ipset-aion.txt"), b"203.0.113.7/32\n").unwrap();
+            }
+            apply_tree(&f.root, &f.install, &staged, &installed, &old, &f.manifest).unwrap();
+            assert_eq!(
+                fs::read(f.install.join("lists/ipset-aion.txt")).unwrap(),
+                if existing {
+                    b"203.0.113.7/32\n".as_slice()
+                } else {
+                    b"193.202.112.0/24\n".as_slice()
+                }
+            );
+        }
+    }
+    #[test]
+    fn one_install_then_first_start_migrates_real_stock_profiles() {
+        for previous in [
+            include_str!("../assets/profile-legacy.txt"),
+            include_str!("../assets/profile-web.txt"),
+        ] {
+            let mut f = Fixture::new();
+            let (staged, installed, old) = f.paths();
+            fs::write(f.install.join("profile.txt"), previous).unwrap();
+            fs::write(f.root.join("profile.txt"), crate::profile::DEFAULT).unwrap();
+            fs::create_dir(f.root.join("lists")).unwrap();
+            fs::write(
+                f.root.join("lists/ipset-aion.txt"),
+                crate::profile::DEFAULT_TARGETS,
+            )
+            .unwrap();
+            f.manifest.files = manifest::files_in_tree(&f.root).unwrap();
+            apply_tree(&f.root, &f.install, &staged, &installed, &old, &f.manifest).unwrap();
+            // The updater preserves user settings; the new app performs the
+            // stock migration on its very first start, without another update.
+            assert_eq!(
+                fs::read_to_string(f.install.join("profile.txt")).unwrap(),
+                previous
+            );
+            let args = crate::profile::arguments(&f.install).unwrap();
+            assert!(args.iter().any(|a| a == "--filter-tcp=1024-65535"));
+            assert_eq!(
+                fs::read_to_string(f.install.join("profile.txt")).unwrap(),
+                crate::profile::DEFAULT
+            );
+            assert_eq!(crate::profile::arguments(&f.install).unwrap(), args);
+            assert_eq!(
+                fs::read_to_string(f.install.join("config.ini")).unwrap(),
+                "custom config"
+            );
+            verify_executable(&installed, &f.manifest).unwrap();
+        }
     }
     #[test]
     fn stale_helper_is_rejected_before_any_payload_changes() {

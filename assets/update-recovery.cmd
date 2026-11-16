@@ -8,17 +8,27 @@ if exist AionStabilizer.exe (
     pause
     exit /b 0
 )
-if exist AionStabilizer.exe.new (
-    ren AionStabilizer.exe.new AionStabilizer.exe
-    echo Restored the new version. Starting it now.
+rem Prefer the known previous installation when both files exist. The .new
+rem file may have been moved aside after failed post-install verification.
+if exist AionStabilizer.exe.old (
+    ren AionStabilizer.exe.old AionStabilizer.exe
+    if errorlevel 1 goto repair_failed
+    echo Restored the previous version. Starting it now.
     start "" AionStabilizer.exe
     exit /b 0
 )
-if exist AionStabilizer.exe.old (
-    ren AionStabilizer.exe.old AionStabilizer.exe
-    echo Restored the previous version. Starting it now.
+if exist AionStabilizer.exe.new (
+    ren AionStabilizer.exe.new AionStabilizer.exe
+    if errorlevel 1 goto repair_failed
+    echo Restored the staged version. Starting it now.
     start "" AionStabilizer.exe
     exit /b 0
 )
 echo No backup found - please reinstall the app.
 pause
+
+exit /b 1
+:repair_failed
+echo Could not restore the executable. Close the app and retry, or reinstall.
+pause
+exit /b 1

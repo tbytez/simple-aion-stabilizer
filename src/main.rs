@@ -145,3 +145,9 @@ fn main() {
         }
     }
 }
+
+// Exercise the exact portable policy used by the vendored Windows handler
+// on the macOS build host too; no duplicate model of the native decision.
+#[cfg(test)]
+#[path = "../vendor/winit/src/platform_impl/windows/dpi_resize_policy.rs"]
+mod native_dpi_regression_tests;

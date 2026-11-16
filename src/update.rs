@@ -115,8 +115,8 @@ fn download(
         if let Err(e) = std::io::Write::write_all(&mut out, &buf[..n]) {
             break Err(e.to_string());
         }
-        if total > 0 {
-            let pct = (got * 100 / total).min(100) as u8;
+        if let Some(pct) = (got * 100).checked_div(total) {
+            let pct = pct.min(100) as u8;
             if pct != last_pct {
                 last_pct = pct;
                 progress(pct);

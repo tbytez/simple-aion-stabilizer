@@ -143,7 +143,7 @@ impl SecureStage {
         sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
     ) -> Result<Self, String> {
         const ERROR_ALREADY_EXISTS: u32 = 183;
-        let mut sa = SECURITY_ATTRIBUTES {
+        let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd as *mut _,
             bInheritHandle: 0,
@@ -152,7 +152,7 @@ impl SecureStage {
             let dir = parent.join(format!("aion-stabilizer-update-{}", rand_hex16()));
             let w = wide_path(&dir);
             unsafe {
-                if CreateDirectoryW(w.as_ptr(), &mut sa) == 0 {
+                if CreateDirectoryW(w.as_ptr(), &sa) == 0 {
                     if GetLastError() == ERROR_ALREADY_EXISTS {
                         continue;
                     }

@@ -6,12 +6,19 @@ license:
   DPI circumvention engine, distributed as part of the
   zapret-discord-youtube bundle by Flowseal
   (https://github.com/Flowseal/zapret-discord-youtube).
+  The bundled reference strategy and compatibility lists retain the Flowseal/
+  bol-van MIT license in licenses/Flowseal-LICENSE.txt.
 
 * WinDivert (WinDivert.dll / WinDivert64.sys) - https://www.reqrypt.org/windivert.html
   Windows packet capture/divert driver by basil00, LGPL v3.
 
 * egui / eframe - https://github.com/emilk/egui
   MIT/Apache-2.0 license.
+
+* winit 0.30.13 - https://github.com/rust-windowing/winit
+  Copyright the winit contributors, Apache-2.0 license.
+  Includes a downstream backport of upstream PR #4341 for Windows mixed-DPI
+  dragging. License and modification notes are supplied under licenses/.
 
 * tray-icon - https://github.com/tauri-apps/tray-icon
   MIT/Apache-2.0 license.

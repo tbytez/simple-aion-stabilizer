@@ -1,5 +1,3 @@
-#[cfg(windows)]
-use crate::core;
 use std::path::Path;
 use std::process::{Child, Command};
 
@@ -72,7 +70,7 @@ impl Engine {
             );
         }
 
-        let args = load_profile(app_dir)?;
+        let args = crate::profile::arguments(app_dir)?;
         if args.is_empty() {
             return Err("profile.txt contains no arguments".to_string());
         }
@@ -81,7 +79,21 @@ impl Engine {
         // discarding them with the hidden console.
         let log = std::fs::File::create(app_dir.join("engine.log"))
             .map_err(|e| format!("Cannot create engine.log: {e}"))?;
-        let stderr = log.try_clone().map_err(|e| format!("Cannot open engine log: {e}"))?;
+        use std::io::Write;
+        let mut header = &log;
+        writeln!(
+            header,
+            "Aion Stabilizer v{}; profile.txt; engine startup",
+            env!("CARGO_PKG_VERSION")
+        )
+        .map_err(|e| e.to_string())?;
+        for arg in &args {
+            writeln!(header, "{arg}").map_err(|e| e.to_string())?;
+        }
+        writeln!(header, "--- winws output ---").map_err(|e| e.to_string())?;
+        let stderr = log
+            .try_clone()
+            .map_err(|e| format!("Cannot open engine log: {e}"))?;
 
         let child = Command::new(&winws)
             .args(&args)
@@ -98,6 +110,16 @@ impl Engine {
         self.child = Some(child);
         self.auto_started = auto;
         self.last_exit = None;
+        // Controller thread only: catch immediate argument/driver failures
+        // before presenting the engine as running, matching AXV's startup check.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if !self.is_running() {
+            let error = self
+                .last_exit
+                .take()
+                .unwrap_or_else(|| "unknown startup error".into());
+            return Err(format!("Engine failed to start ({error}). See engine.log."));
+        }
         Ok(())
     }
 
@@ -138,17 +160,6 @@ impl Engine {
         self.auto_started = false;
         self.last_exit = None;
     }
-}
-
-/// Parse profile.txt into a winws argument vector, writing the default
-/// profile when the file is missing.
-#[cfg(windows)]
-fn load_profile(app_dir: &Path) -> Result<Vec<String>, String> {
-    let text = crate::profile::load(app_dir)?;
-
-    let bin = format!("{}\\", app_dir.join("bin").display());
-    let lists = format!("{}\\", app_dir.join("lists").display());
-    Ok(core::parse_profile_args(&text, &bin, &lists))
 }
 
 #[cfg(all(test, not(windows)))]

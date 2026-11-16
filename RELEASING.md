@@ -33,6 +33,11 @@ cargo run -p sign-manifest -- generate release-keys
 2. Build + assemble: `./package.sh <path-to-extracted-zapret-bundle>`
    - cross-compiles `AionStabilizer.exe`
    - builds `dist/SimpleAionStabilizer-v<ver>-win64.zip`
+   - checks every profile file dependency and the pinned AXV-reference backend
+     hashes through `tools/validate-payload.sh`; this rejects incomplete bundles
+     and requires deliberate review when updating the backend
+   - builds with Cargo.lock enforced and an explicit target directory, preventing
+     CARGO_TARGET_DIR from making packaging pick an older executable
    - signs `dist/SimpleAionStabilizer-v<ver>-manifest.txt` (skipped
      with a loud warning when no signing key exists)
 3. Verify the artifacts before publishing:
@@ -67,3 +72,10 @@ cargo run -p sign-manifest -- generate release-keys
   alone, the app will never offer it.
 - Private key must never be committed (`git status` should never list
   `*.key`).
+
+## v0.1.8 validation status
+
+See docs/PRE-RELEASE-AUDIT.md for the artifact audit and remaining
+native checks. Cross-compilation and host tests do not establish successful
+mixed-DPI dragging, live Aion login, or a native Windows update/relaunch.
+Retain these unverified runtime checks in the release notes.

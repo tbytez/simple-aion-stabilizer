@@ -7,6 +7,8 @@
 #[allow(dead_code)] // used on Windows + in tests
 pub fn parse_profile_args(text: &str, bin_dir: &str, lists_dir: &str) -> Vec<String> {
     let mut args = Vec::new();
+    // Notepad and imported Windows profiles may carry a UTF-8 BOM.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -174,7 +176,7 @@ pub fn process_in_tasklist(csv: &str, watch_names: &[String]) -> bool {
         // first CSV field = image name
         if let Some(end) = line[1..].find('"') {
             let image = line[1..1 + end].to_lowercase();
-            if watch_names.iter().any(|n| *n == image) {
+            if watch_names.contains(&image) {
                 return true;
             }
         }
@@ -202,17 +204,37 @@ mod tests {
     #[test]
     fn profile_handles_crlf_empty_and_unicode() {
         assert_eq!(parse_profile_args("", "b", "l"), Vec::<String>::new());
-        assert_eq!(parse_profile_args("# only comments\n# x", "b", "l").len(), 0);
+        assert_eq!(
+            parse_profile_args("# only comments\n# x", "b", "l").len(),
+            0
+        );
         let args = parse_profile_args("--hostlist={LISTS}файл.txt\r\n--x", "b", "l");
         assert_eq!(args[0], "--hostlist=lфайл.txt");
         assert_eq!(args.len(), 2);
     }
 
     #[test]
+    fn profile_bom_and_paths_with_spaces_keep_one_argument_per_token() {
+        let args = parse_profile_args(
+            "\u{feff}# profile\r\n--hostlist={LISTS}a.txt --fake={BIN}b.bin\r\n",
+            "C:\\Aion Tools\\bin\\",
+            "C:\\Aion Tools\\lists\\",
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--hostlist=C:\\Aion Tools\\lists\\a.txt",
+                "--fake=C:\\Aion Tools\\bin\\b.bin"
+            ]
+        );
+    }
+    #[test]
     fn profile_stress_many_lines() {
         let mut text = String::new();
         for i in 0..10_000 {
-            text.push_str(&format!("--arg{i}={{BIN}}f.bin --arg{i}b={{LISTS}}l.txt --new\n# c\n"));
+            text.push_str(&format!(
+                "--arg{i}={{BIN}}f.bin --arg{i}b={{LISTS}}l.txt --new\n# c\n"
+            ));
         }
         let args = parse_profile_args(&text, "B", "L");
         assert_eq!(args.len(), 30_000);
@@ -238,7 +260,10 @@ mod tests {
             vec!["aion2.exe".to_string(), "foo.exe".to_string()]
         );
         // falls back on empty/garbage
-        assert_eq!(config_get_list("watch_process=,,\n", "watch_process", &["d.exe"]), vec!["d.exe"]);
+        assert_eq!(
+            config_get_list("watch_process=,,\n", "watch_process", &["d.exe"]),
+            vec!["d.exe"]
+        );
         // missing key -> default
         assert_eq!(
             config_get_list("x=1\n", "watch_process", DEFAULT_WATCH_PROCESSES).len(),
@@ -331,7 +356,10 @@ mod tests {
         // partial names do not match (aion2_extra.exe != aion2.exe)
         assert!(!process_in_tasklist("\"aion2_extra.exe\",\"1\"", &names));
         // stress: big list, last entry matches
-        let big = format!("{}\"aion64.bin\",\"9\"", "\"x.exe\",\"1\"\r\n".repeat(50_000));
+        let big = format!(
+            "{}\"aion64.bin\",\"9\"",
+            "\"x.exe\",\"1\"\r\n".repeat(50_000)
+        );
         assert!(process_in_tasklist(&big, &["aion64.bin".to_string()]));
     }
 }

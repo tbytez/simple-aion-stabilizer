@@ -106,12 +106,12 @@ fn hex_val(c: u8) -> Option<u8> {
 
 pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in b.chunks_exact(2) {
+    for pair in b.as_chunks::<2>().0 {
         out.push(hex_val(pair[0])? * 16 + hex_val(pair[1])?);
     }
     Some(out)

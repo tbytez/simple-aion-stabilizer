@@ -1,4 +1,9 @@
 fn main() {
+    // Track resource inputs explicitly. Documentation and audit reports do
+    // not change the executable; manifest, icon and version changes do.
+    for input in ["build.rs", "Cargo.toml", "app.manifest", "icon.ico"] {
+        println!("cargo:rerun-if-changed={input}");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap();
         let numeric = format!("{},0", version.replace('.', ","));

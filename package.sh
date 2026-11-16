@@ -17,7 +17,7 @@ ZIP="$HERE/dist/${APP}-v${VERSION}-win64.zip"
 export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH"
 
 echo "==> Building release exe"
-cargo build --release --target x86_64-pc-windows-gnu --manifest-path "$HERE/Cargo.toml"
+cargo build --locked --release --target x86_64-pc-windows-gnu --target-dir "$HERE/target" --manifest-path "$HERE/Cargo.toml"
 
 EXE="$HERE/target/x86_64-pc-windows-gnu/release/aion-stabilizer.exe"
 [ -f "$EXE" ] || { echo "build failed: $EXE missing"; exit 1; }
@@ -31,13 +31,26 @@ cp "$HERE/assets/profile.txt" "$OUT/profile.txt"
 cp "$HERE/assets/uninstall.cmd" "$OUT/uninstall.cmd"
 cp "$HERE/assets/update-recovery.cmd" "$OUT/update-recovery.cmd"
 cp "$HERE/README.md" "$HERE/LICENSE" "$HERE/THIRD_PARTY_NOTICES.txt" "$OUT/"
+mkdir -p "$OUT/docs"
+cp "$HERE/docs/AXV-INVESTIGATION.md" "$HERE/docs/WINDOWS-VALIDATION.md" "$OUT/docs/"
+
+# Vendored windowing dependency license and downstream modification notice.
+mkdir -p "$OUT/licenses"
+cp "$HERE/vendor/winit/LICENSE" "$OUT/licenses/winit-LICENSE.txt"
+cp "$HERE/assets/licenses/Flowseal-LICENSE.txt" "$OUT/licenses/Flowseal-LICENSE.txt"
+cp "$HERE/vendor/winit/PATCH-NOTES.md" "$OUT/licenses/winit-PATCH-NOTES.md"
 
 # zapret engine binaries
 cp -R "$ZAPRET_SRC/bin" "$OUT/bin"
 # zapret lists (hostlists/excludes), then overlay our Aion additions
 cp -R "$ZAPRET_SRC/lists" "$OUT/lists"
 cp "$HERE/assets/lists/list-aion.txt" "$OUT/lists/list-aion.txt"
+cp "$HERE/assets/lists/ipset-aion.txt" "$OUT/lists/ipset-aion.txt"
+cp "$HERE/assets/lists/list-compat-exclude.txt" "$OUT/lists/list-compat-exclude.txt"
 cp "$HERE/assets/lists/ipset-all.txt" "$OUT/lists/ipset-all.txt"
+
+echo "==> Verifying profile dependencies and reference backend"
+"$HERE/tools/validate-payload.sh" "$OUT"
 
 echo "==> Creating $ZIP"
 (cd "$HERE/dist" && zip -qry "$(basename "$ZIP")" "$(basename "$OUT")")
@@ -50,7 +63,7 @@ MANIFEST="$HERE/dist/${APP}-v${VERSION}-manifest.txt"
 rm -f "$MANIFEST"
 if [ -f "$KEY" ]; then
     echo "==> Signing update manifest"
-    cargo run -q -p sign-manifest --manifest-path "$HERE/Cargo.toml" -- \
+    cargo run --locked -q -p sign-manifest --target-dir "$HERE/target" --manifest-path "$HERE/Cargo.toml" -- \
         sign "$OUT" --key "$KEY" --zip "$ZIP" --out "$MANIFEST"
 else
     echo "!! No signing key at $KEY - update manifest NOT produced."

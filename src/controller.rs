@@ -272,11 +272,7 @@ fn apply_update(
 
 impl Controller {
     /// Spawn the controller thread. `wake` is called after status changes.
-    pub fn new(
-        app_dir: PathBuf,
-        cfg: Config,
-        wake: Arc<dyn Fn() + Send + Sync>,
-    ) -> Self {
+    pub fn new(app_dir: PathBuf, cfg: Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (tx, rx) = channel::<Cmd>();
         let status = Arc::new(Mutex::new(Status {
             watch: cfg.watch_game,
@@ -296,12 +292,28 @@ impl Controller {
     #[cfg(test)]
     pub fn for_ui_test_with_commands() -> (Self, Receiver<Cmd>) {
         let (tx, rx) = channel();
-        (Self { tx, status: Arc::new(Mutex::new(Status::default())) }, rx)
+        (
+            Self {
+                tx,
+                status: Arc::new(Mutex::new(Status::default())),
+            },
+            rx,
+        )
     }
 
     pub fn status(&self) -> Status {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
+}
+
+/// Read current update state at each decision, including after a command
+/// changes it. A loop-entry snapshot is stale after ApplyUpdate stops the
+/// engine and marks the download busy.
+fn update_in_progress(status: &Mutex<Status>) -> bool {
+    status
+        .lock()
+        .map(|s| s.update.as_ref().is_some_and(|u| u.state.busy()))
+        .unwrap_or(true)
 }
 
 const AUTO_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
@@ -365,10 +377,7 @@ fn run(
     loop {
         // while an update downloads/applies, block engine (re)starts - it
         // would re-lock the winws/WinDivert files the swap needs to write
-        let updating = status
-            .lock()
-            .map(|s| s.update.as_ref().is_some_and(|u| u.state.busy()))
-            .unwrap_or(false);
+        let updating = update_in_progress(&status);
 
         match rx.recv_timeout(Duration::from_millis(400)) {
             Ok(Cmd::Shutdown) => {
@@ -497,8 +506,10 @@ fn run(
             && game_present
             && !manual_latch
             && !engine.is_running()
-            && !updating
-            && last_auto_fail.map(|t| t.elapsed() > AUTO_RETRY_COOLDOWN).unwrap_or(true)
+            && !update_in_progress(&status)
+            && last_auto_fail
+                .map(|t| t.elapsed() > AUTO_RETRY_COOLDOWN)
+                .unwrap_or(true)
         {
             match engine.start(&app_dir, true) {
                 Ok(()) => {
@@ -512,5 +523,35 @@ fn run(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod update_watcher_tests {
+    use super::*;
+
+    #[test]
+    fn update_started_during_command_handling_blocks_watcher_restart() {
+        let status = Mutex::new(Status::default());
+        assert!(!update_in_progress(&status)); // loop-entry state
+                                               // ApplyUpdate stops the engine during command dispatch. The watcher
+                                               // must see the new state before considering an automatic restart.
+        for state in [
+            UpdateState::Downloading(0),
+            UpdateState::Downloading(100),
+            UpdateState::Verifying,
+            UpdateState::Installing,
+        ] {
+            status.lock().unwrap().update = Some(UpdateInfo {
+                version: "9.0.0".into(),
+                zip_url: String::new(),
+                manifest_url: String::new(),
+                state,
+            });
+            assert!(update_in_progress(&status));
+        }
+        status.lock().unwrap().update.as_mut().unwrap().state =
+            UpdateState::Failed("download failed".into());
+        assert!(!update_in_progress(&status));
     }
 }

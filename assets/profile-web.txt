@@ -1,0 +1,10 @@
+# Aion domain-scoped HTTP/TLS profile.
+# Only HTTP/TLS connections to hosts in list-aion.txt are split.
+# Unknown game protocols and UDP are deliberately left untouched.
+# Packet splitting preserves the original stream; no fake payloads or overlap.
+# ISP-specific strategies still need testing on the actual connection.
+--wf-tcp=80,443
+--filter-tcp=80,443
+--hostlist={LISTS}list-aion.txt
+--dpi-desync=multisplit
+--dpi-desync-split-pos=1
