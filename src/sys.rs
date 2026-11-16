@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::Registry::*;
+use windows_sys::Win32::System::Services::*;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -204,5 +205,40 @@ pub fn tie_child_to_process(pid: u32) {
             AssignProcessToJobObject(job, h);
             CloseHandle(h);
         }
+    }
+}
+
+// ---------------- WinDivert driver cleanup ----------------
+//
+// We kill winws with TerminateProcess, so its WinDivertClose (which stops
+// and deletes the "WinDivert" service) never runs. Without that the driver
+// image stays loaded for the rest of the boot and bin\WinDivert64.sys
+// cannot be deleted or overwritten. Stopping + deleting the service
+// unloads it right away - the app always runs elevated so recreating it
+// on the next engine start is fine.
+
+const DELETE_ACCESS: u32 = 0x0001_0000;
+const DRIVER_SERVICES: &[&str] = &["WinDivert", "WinDivert14"];
+
+/// Best-effort: stop + delete the WinDivert service(s). Safe to call when
+//  nothing is running - missing/stopped services are ignored.
+pub fn windivert_unload() {
+    unsafe {
+        let scm = OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_CONNECT);
+        if scm.is_null() {
+            return;
+        }
+        for name in DRIVER_SERVICES {
+            let w = wide(name);
+            let svc = OpenServiceW(scm, w.as_ptr(), SERVICE_STOP | DELETE_ACCESS);
+            if svc.is_null() {
+                continue; // not installed under this name
+            }
+            let mut status: SERVICE_STATUS = std::mem::zeroed();
+            let _ = ControlService(svc, SERVICE_CONTROL_STOP, &mut status);
+            let _ = DeleteService(svc);
+            CloseServiceHandle(svc);
+        }
+        CloseServiceHandle(scm);
     }
 }

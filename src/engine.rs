@@ -126,6 +126,14 @@ impl Engine {
             let _ = c.kill();
             let _ = c.wait();
         }
+        // winws died via TerminateProcess without WinDivertClose - unload
+        // the driver service ourselves so bin\WinDivert64.sys unlocks and
+        // the folder can be deleted/updated without a reboot. Skip when a
+        // foreign zapret instance is alive: its winws still owns the driver.
+        #[cfg(windows)]
+        if !crate::procs::is_running("winws.exe") {
+            crate::sys::windivert_unload();
+        }
         self.auto_started = false;
         self.last_exit = None;
     }

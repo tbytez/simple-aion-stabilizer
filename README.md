@@ -50,6 +50,10 @@ The app checks GitHub for a newer release on start and offers a
 one-click in-place update (it keeps your `config.ini` and `profile.txt`).
 Disable the check with `update_check=0` in `config.ini`.
 
+To remove the app: quit it from the tray (stopping the engine also
+unloads the WinDivert driver), then delete the folder - no reboot needed.
+If files are still locked, run `uninstall.cmd` as administrator first.
+
 ## Planned
 
 - **Multi-profile support**: pick a profile in the UI (`profiles/*.txt`)

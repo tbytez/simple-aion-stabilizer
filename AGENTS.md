@@ -38,4 +38,6 @@ ipset-all.txt). App resolves everything relative to its own exe path.
 In-app updater (src/update.rs): checks GitHub `releases/latest`, expects a
 release asset named `*-win64.zip` containing the folder above. Update swaps
 files in place (rename-running-exe trick), preserves `config.ini` +
-`profile.txt`, relaunches with `--updated`.
+`profile.txt`, relaunches with `--updated`. Engine stop also stops+deletes
+the WinDivert service (winws is killed hard, so its WinDivertClose never
+runs) - keeps bin\WinDivert64.sys deletable without a reboot.

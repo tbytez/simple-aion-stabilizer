@@ -1,6 +1,6 @@
 [package]
 name = "aion-stabilizer"
-version = "1.1.1"
+version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 description = "Simple tray-based Aion connection stabilizer for Windows (zapret/winws frontend)"
@@ -24,6 +24,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
     "Win32_System_Registry",
+    "Win32_System_Services",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
