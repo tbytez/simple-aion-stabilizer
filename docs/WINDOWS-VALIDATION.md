@@ -1,4 +1,4 @@
-# v0.1.6 Windows validation
+# Windows validation
 
 Automated UI verification covers 19 scale factors: 100%, 110%, 125%, 137%,
 150%, 175%, 187.5%, 200%, 225%, 250%, 262.5%, 300%, 350%, 400%, 450%,
@@ -64,3 +64,27 @@ sequence-overlap rules in the new default.
 No Windows runtime or live Aion/WE connection is available in the macOS
 build environment. Cross-compilation and headless layout tests do not
 establish that the above runtime checks passed.
+
+## v0.1.7 updater and restored design
+
+The power ring, status chips, switch rows and compact typography are restored
+inside layout-managed cards. The ring glow is static, and the native window
+frame still handles resizing. Rendered dark/running and light/stopped previews
+were inspected on macOS. The existing scale matrix and input tests still pass.
+
+Six portable installer tests verify a single successful handoff installs the
+exact new executable, preserves config/profile, rejects an old helper's version
+or bytes, and rolls back failed promotion or post-rename corruption. Payload
+copy failure must leave the old executable in place.
+
+Three Windows-only tests cover acquiring an existing unowned mutex, retrying
+after contention, and exclusive stage claims/live-owner markers. These compile
+for the Windows target but have not been executed in the macOS environment.
+
+On Windows, update once from v0.1.5/v0.1.6 to v0.1.7. Confirm the header reports
+v0.1.7 immediately after the automatic restart, a subsequent update check
+reports the latest version, and update.log records executable verification.
+Also test starting a second instance during the handoff, a temporarily locked
+backup executable, and an interrupted helper. Startup cleanup must skip live
+update payloads. A genuine install failure must show an error and log the
+reason rather than silently presenting the old version as an updated app.

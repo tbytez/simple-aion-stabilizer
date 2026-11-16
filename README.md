@@ -57,6 +57,9 @@ The app checks GitHub for a newer release on start and offers a
 one-click in-place update (it keeps your `config.ini` and `profile.txt`).
 Updates install only after a signed manifest verifies every payload
 file. Disable the check with `update_check=0` in `config.ini`.
+The update helper verifies its own version and executable against the signed
+payload, then verifies the installed executable before relaunch. Failures
+show an error dialog and are recorded in `update.log` beside the app.
 If an update is ever interrupted so hard that `AionStabilizer.exe`
 disappears, run `update-recovery.cmd` in the app folder to restore it.
 

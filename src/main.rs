@@ -16,6 +16,8 @@ mod tray;
 mod ui;
 #[cfg(windows)]
 mod update;
+#[cfg(any(windows, test))]
+mod update_install;
 
 use controller::{Cmd, Config, Controller};
 use std::path::PathBuf;
@@ -28,6 +30,8 @@ fn main() {
     let start_tray = args.iter().any(|a| a == "--tray" || a == "--minimized");
 
     #[cfg(windows)]
+    let _instance;
+    #[cfg(windows)]
     {
         // headless update-helper mode: the staged new exe finishes the
         // file swap after the old app exits - no mutex, no window
@@ -39,21 +43,19 @@ fn main() {
             std::process::exit(code);
         }
 
-        // the updater relaunches us while the old process may still be
-        // exiting - retry the mutex briefly before giving up
+        // Take ownership, not merely a new handle to the named object.
+        // Keep the guard on the main thread until the event loop exits.
         let start_updated = args.iter().any(|a| a == "--updated");
-        let mut ok = sys::acquire_single_instance();
-        for _ in 0..40 {
-            if ok || !start_updated {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            ok = sys::acquire_single_instance();
-        }
-        if !ok {
+        let timeout = if start_updated {
+            std::time::Duration::from_secs(120)
+        } else {
+            std::time::Duration::ZERO
+        };
+        let Some(instance) = sys::InstanceMutex::acquire(timeout) else {
             sys::focus_existing_instance();
             return;
-        }
+        };
+        _instance = instance;
         update::cleanup_old_files();
         update::cleanup_stale_stages();
     }
@@ -70,7 +72,7 @@ fn main() {
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
-        .with_inner_size([460.0, 680.0])
+        .with_inner_size([420.0, 700.0])
         // Do not force a logical minimum larger than a small high-DPI
         // display. The UI scrolls in both axes below its normal layout width.
         .with_clamp_size_to_monitor_size(true)

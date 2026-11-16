@@ -11,7 +11,9 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
-use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+use windows_sys::Win32::Security::Cryptography::{
+    BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::JobObjects::*;
@@ -22,14 +24,39 @@ use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const MUTEX_NAME: &[u16] = &[
-    b'L' as u16, b'o' as u16, b'c' as u16, b'a' as u16, b'l' as u16, b'\\' as u16, b'S' as u16,
-    b'i' as u16, b'm' as u16, b'p' as u16, b'l' as u16, b'e' as u16, b'A' as u16, b'i' as u16,
-    b'o' as u16, b'n' as u16, b'S' as u16, b't' as u16, b'a' as u16, b'b' as u16, b'i' as u16,
-    b'l' as u16, b'i' as u16, b'z' as u16, b'e' as u16, b'r' as u16, b'M' as u16, b'u' as u16,
-    b't' as u16, b'e' as u16, b'x' as u16, 0,
+    b'L' as u16,
+    b'o' as u16,
+    b'c' as u16,
+    b'a' as u16,
+    b'l' as u16,
+    b'\\' as u16,
+    b'S' as u16,
+    b'i' as u16,
+    b'm' as u16,
+    b'p' as u16,
+    b'l' as u16,
+    b'e' as u16,
+    b'A' as u16,
+    b'i' as u16,
+    b'o' as u16,
+    b'n' as u16,
+    b'S' as u16,
+    b't' as u16,
+    b'a' as u16,
+    b'b' as u16,
+    b'i' as u16,
+    b'l' as u16,
+    b'i' as u16,
+    b'z' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'M' as u16,
+    b'u' as u16,
+    b't' as u16,
+    b'e' as u16,
+    b'x' as u16,
+    0,
 ];
-const ERROR_ALREADY_EXISTS: u32 = 183;
-
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -95,6 +122,7 @@ fn stage_security_descriptor() -> Option<windows_sys::Win32::Security::PSECURITY
 pub struct SecureStage {
     dir: PathBuf,
     hold: HANDLE,
+    _claim: Option<StageClaim>,
 }
 
 impl SecureStage {
@@ -148,7 +176,19 @@ impl SecureStage {
                     let _ = std::fs::remove_dir_all(&dir);
                     return Err("cannot pin staging dir".to_string());
                 }
-                return Ok(Self { dir, hold });
+                let claim = match StageClaim::acquire(&dir, std::time::Duration::ZERO) {
+                    Ok(claim) => claim,
+                    Err(e) => {
+                        CloseHandle(hold);
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(e);
+                    }
+                };
+                return Ok(Self {
+                    dir,
+                    hold,
+                    _claim: Some(claim),
+                });
             }
         }
         Err("cannot create staging dir (name collision)".to_string())
@@ -161,10 +201,71 @@ impl SecureStage {
 
 impl Drop for SecureStage {
     fn drop(&mut self) {
+        drop(self._claim.take());
         unsafe {
             CloseHandle(self.hold);
         }
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Exclusive live-stage marker shared by downloader, helper and cleanup.
+/// Unlike a directory pin, it lets cleanup check liveness *before* deleting
+/// any files inside the staging tree.
+pub struct StageClaim(HANDLE);
+impl StageClaim {
+    pub fn acquire(dir: &std::path::Path, timeout: std::time::Duration) -> Result<Self, String> {
+        let started = std::time::Instant::now();
+        let name = wide_path(&dir.join("active.lock"));
+        loop {
+            unsafe {
+                let h = CreateFileW(
+                    name.as_ptr(),
+                    FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                    0,
+                    ptr::null(),
+                    OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    ptr::null_mut(),
+                );
+                if h != INVALID_HANDLE_VALUE && !h.is_null() {
+                    return Ok(Self(h));
+                }
+                let error = GetLastError();
+                if error != 32 || started.elapsed() >= timeout {
+                    return Err(format!("cannot claim update stage: Windows error {error}"));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+impl Drop for StageClaim {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+/// Protect the interval between the downloader releasing its stage claim
+/// on exit and the already-spawned helper acquiring it. PID reuse can only
+/// delay cleanup of an orphan; it cannot authorize an installation.
+pub fn stage_owner_running(dir: &std::path::Path) -> bool {
+    let Some(pid) = std::fs::read_to_string(dir.join("owner.pid"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            return GetLastError() != 87;
+        }
+        let result = WaitForSingleObject(process, 0);
+        CloseHandle(process);
+        result != WAIT_OBJECT_0
     }
 }
 
@@ -181,14 +282,20 @@ fn rand_hex16() -> String {
     crate::manifest::hex_encode(&b)
 }
 
-/// Returns false when another instance already holds the mutex.
-pub fn acquire_single_instance() -> bool {
-    unsafe {
-        let h = CreateMutexW(ptr::null(), 1, MUTEX_NAME.as_ptr());
-        if h.is_null() {
-            return true; // cannot tell - don't block the user
-        }
-        GetLastError() != ERROR_ALREADY_EXISTS
+/// Own the single-instance mutex for the lifetime of the main thread.
+/// Existence is not ownership: an updater or a waiting launch may still
+/// hold a handle after the previous owner has released it.
+pub struct InstanceMutex(HANDLE);
+
+impl InstanceMutex {
+    pub fn acquire(timeout: std::time::Duration) -> Option<Self> {
+        wait_instance_mutex(timeout).map(Self)
+    }
+}
+
+impl Drop for InstanceMutex {
+    fn drop(&mut self) {
+        release_mutex(self.0);
     }
 }
 
@@ -198,8 +305,12 @@ pub fn acquire_single_instance() -> bool {
 /// WAIT_ABANDONED counts as acquired - that is exactly the dead-process
 /// case we are waiting for. Pass the handle to release_mutex when done.
 pub fn wait_instance_mutex(timeout: std::time::Duration) -> Option<HANDLE> {
+    wait_named_mutex(MUTEX_NAME, timeout)
+}
+
+fn wait_named_mutex(name: &[u16], timeout: std::time::Duration) -> Option<HANDLE> {
     unsafe {
-        let h = CreateMutexW(ptr::null(), 0, MUTEX_NAME.as_ptr());
+        let h = CreateMutexW(ptr::null(), 0, name.as_ptr());
         if h.is_null() {
             return None;
         }
@@ -427,5 +538,63 @@ pub fn windivert_unload() {
             CloseServiceHandle(svc);
         }
         CloseServiceHandle(scm);
+    }
+}
+
+#[cfg(test)]
+mod update_lock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn existing_unowned_mutex_can_be_acquired() {
+        let name = wide(&format!(
+            "Local\\AionMutexTest-existing-{}",
+            std::process::id()
+        ));
+        unsafe {
+            let existing = CreateMutexW(ptr::null(), 0, name.as_ptr());
+            assert!(!existing.is_null());
+            let acquired = wait_named_mutex(&name, Duration::ZERO)
+                .expect("existence must not prevent acquiring ownership");
+            release_mutex(acquired);
+            CloseHandle(existing);
+        }
+    }
+
+    #[test]
+    fn waiting_launch_can_take_ownership_after_release() {
+        let name = wide(&format!(
+            "Local\\AionMutexTest-handoff-{}",
+            std::process::id()
+        ));
+        let owner = wait_named_mutex(&name, Duration::ZERO).unwrap();
+        let contender_name = name.clone();
+        assert!(std::thread::spawn(
+            move || wait_named_mutex(&contender_name, Duration::ZERO).is_none()
+        )
+        .join()
+        .unwrap());
+        release_mutex(owner);
+        let next = wait_named_mutex(&name, Duration::ZERO)
+            .expect("retry must not be poisoned by an earlier failed wait");
+        release_mutex(next);
+    }
+
+    #[test]
+    fn cleanup_cannot_claim_an_active_stage() {
+        let dir = std::env::temp_dir().join(format!("aion-stage-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let claim = StageClaim::acquire(&dir, Duration::ZERO).unwrap();
+        assert!(StageClaim::acquire(&dir, Duration::ZERO).is_err());
+        std::fs::write(dir.join("owner.pid"), std::process::id().to_string()).unwrap();
+        assert!(
+            stage_owner_running(&dir),
+            "live owner also protects the handoff gap"
+        );
+        drop(claim);
+        assert!(stage_owner_running(&dir));
+        drop(StageClaim::acquire(&dir, Duration::ZERO).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

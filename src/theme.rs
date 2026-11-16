@@ -102,16 +102,16 @@ pub fn apply(ctx: &egui::Context) {
         // native pixels-per-point rather than stretching a cached bitmap.
         style
             .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
         style
             .text_styles
             .insert(egui::TextStyle::Small, egui::FontId::proportional(13.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
         style.spacing.interact_size = egui::vec2(40.0, 32.0);
         ctx.set_style_of(theme, style);
     }

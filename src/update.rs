@@ -9,7 +9,7 @@
 //! for the old instance's mutex (which also blocks other launches during
 //! the swap), copies every payload file while the old exe is still in
 //! place, and only then swaps the exe with two adjacent renames - a crash
-//! anywhere earlier leaves the old install fully intact; the tiny no-exe
+//! anywhere earlier leaves the old executable in place; the tiny no-exe
 //! window between the renames is covered by update-recovery.cmd.
 //!
 //! Security properties of the pipeline (see src/manifest.rs):
@@ -29,17 +29,15 @@
 use crate::core::{self, ReleaseInfo};
 use crate::manifest;
 use crate::sys;
+use crate::update_install::{apply_tree, copy_retry};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 const REPO: &str = "tbytez/simple-aion-stabilizer";
 const APP_EXE: &str = manifest::APP_EXE;
-
-/// Files the user may have edited - never overwritten by an update.
-const KEEP: &[&str] = &["config.ini", "profile.txt"];
 
 /// Cap on the GitHub API response itself.
 const MAX_API_BYTES: u64 = 4 * 1024 * 1024;
@@ -180,9 +178,12 @@ pub fn run_update(
     // 2. the zip payload, byte-capped and hash-checked against the
     //    signed manifest before it is even opened
     let zip_path = stage.path().join("payload.zip");
-    download(&info.zip_url, &zip_path, manifest::MAX_DOWNLOAD_BYTES, &mut |p| {
-        progress(Progress::Download(p))
-    })?;
+    download(
+        &info.zip_url,
+        &zip_path,
+        manifest::MAX_DOWNLOAD_BYTES,
+        &mut |p| progress(Progress::Download(p)),
+    )?;
     progress(Progress::Verify);
     if manifest::sha256_file(&zip_path)? != m.zip_sha256 {
         return Err("downloaded zip does not match manifest hash".to_string());
@@ -208,7 +209,16 @@ pub fn run_update(
         .arg(stage.path())
         .spawn()
     {
-        Ok(_) => {
+        Ok(mut child) => {
+            // Publish the live helper PID before relinquishing our stage
+            // claim. Cleanup must also skip this stage during the brief
+            // interval between the parent closing its claim and the helper
+            // acquiring it. A failed marker write cancels the handoff.
+            if let Err(e) = fs::write(stage.path().join("owner.pid"), child.id().to_string()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("cannot record update handoff: {e}"));
+            }
             std::mem::forget(stage);
             Ok(())
         }
@@ -220,81 +230,72 @@ pub fn run_update(
 }
 
 /// Headless `--finish-update <stage_dir>` entry point, run by the staged
-/// new exe. Exit code for the process; on any failure the install is
-/// untouched (the running exe is renamed only after every payload file
-/// is already in place).
+/// new exe. Payload copying precedes the executable swap; failed promotion
+/// attempts restore the old executable and report the failure explicitly.
 pub fn finish_update(stage_dir: &Path) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return 1,
+    };
+    let Some(app_dir) = exe.parent() else {
+        return 1;
+    };
+    let final_exe = app_dir.join(APP_EXE);
+    let old_exe = final_exe.with_extension("exe.old");
+    let mut log = format!(
+        "Update helper v{}\nInstall: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        app_dir.display()
+    );
     let result = (|| -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let app_dir = exe
-            .parent()
-            .ok_or_else(|| "cannot locate install dir".to_string())?
-            .to_path_buf();
-        let final_exe = app_dir.join(APP_EXE);
-        let old_exe = final_exe.with_extension("exe.old");
-
-        // Owning the instance mutex proves the old app exited, keeps any
-        // new launch from starting mid-swap, and stops a racing launch's
-        // stale-stage cleanup from deleting our payload.
-        let mutex = sys::wait_instance_mutex(Duration::from_secs(120))
+        // Claim the stage before waiting for the app. Startup cleanup skips
+        // live claims, including during the gap before the helper gets the
+        // instance mutex. This also works with older parent updaters.
+        let _stage = sys::StageClaim::acquire(stage_dir, Duration::from_secs(120))?;
+        let mutex = sys::InstanceMutex::acquire(Duration::from_secs(120))
             .ok_or_else(|| "timed out waiting for the app to exit".to_string())?;
-
-        // Re-verify the signed tree before touching the install: the
-        // helper must never apply bytes it did not authenticate itself.
-        let text = fs::read_to_string(stage_dir.join("manifest.txt"))
-            .map_err(|e| e.to_string())?;
+        log.push_str("Previous instance exited; verifying payload.\n");
+        let text = fs::read_to_string(stage_dir.join("manifest.txt")).map_err(|e| e.to_string())?;
         let m = manifest::verify_manifest_pinned(&text)?;
+        crate::update_install::verify_helper_version(&m, env!("CARGO_PKG_VERSION"))?;
         let root = manifest::find_payload_root(&stage_dir.join("x"))?;
-        let verified = manifest::verify_tree(&root, &m);
-
-        let swap = verified.and_then(|()| apply_tree(&root, &app_dir, &exe, &final_exe, &old_exe));
-        sys::release_mutex(mutex);
-        swap?;
-
+        manifest::verify_tree(&root, &m)?;
+        log.push_str(&format!("Installing signed version {}.\n", m.version));
+        apply_tree(&root, app_dir, &exe, &final_exe, &old_exe, &m)?;
+        log.push_str("Installed executable verified; restarting.\n");
+        // Keep the mutex through process creation. --updated waits for actual
+        // ownership, then starts only after we release it, never mid-swap.
         Command::new(&final_exe)
             .arg("--updated")
+            .current_dir(app_dir)
             .spawn()
-            .map_err(|e| format!("cannot relaunch: {e}"))?;
+            .map_err(|e| format!("cannot relaunch installed version: {e}"))?;
+        drop(mutex);
         Ok(())
     })();
-
-    let _ = fs::remove_dir_all(stage_dir);
-    if result.is_err() {
-        // the install is untouched - bring the old app back so the
-        // user is not left with a silently vanished window
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let _ = Command::new(dir.join(APP_EXE)).spawn();
-            }
+    if let Err(error) = result {
+        log.push_str(&format!("FAILED: {error}\n"));
+        let _ = fs::write(app_dir.join("update.log"), &log);
+        // Do not silently reopen the old version and call it an update.
+        // A dialog also surfaces failures when an older app invoked us.
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let message = sys::wide(&format!("The update did not complete: {error}\n\nDetails are saved in update.log beside the app. The existing installation will reopen if available. If it does not, run update-recovery.cmd."));
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                sys::wide("Aion Stabilizer update failed").as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
         }
+        let _ = Command::new(&final_exe).current_dir(app_dir).spawn();
+        let _ = fs::remove_dir_all(stage_dir);
         return 1;
     }
+    log.push_str("SUCCESS\n");
+    let _ = fs::write(app_dir.join("update.log"), log);
+    let _ = fs::remove_dir_all(stage_dir);
     0
-}
-
-/// Copy the verified payload into `app_dir`, then swap the exe. Copying
-/// first means a failure leaves the old exe untouched; the only no-exe
-/// window is the pair of adjacent renames at the end.
-fn apply_tree(
-    root: &Path,
-    app_dir: &Path,
-    staged_exe: &Path,
-    final_exe: &Path,
-    old_exe: &Path,
-) -> Result<(), String> {
-    copy_tree(root, app_dir)?;
-
-    let _ = fs::remove_file(old_exe);
-    if final_exe.is_file() {
-        rename_retry(final_exe, old_exe, 8)
-            .map_err(|e| format!("cannot move old exe: {e}"))?;
-    }
-    if let Err(e) = rename_retry(staged_exe, final_exe, 4) {
-        // try to leave a working install: the old exe is still intact
-        let _ = fs::rename(old_exe, final_exe);
-        return Err(format!("cannot place new exe: {e}"));
-    }
-    Ok(())
 }
 
 /// Delete the leftover files the updater may leave next to the exe.
@@ -306,10 +307,7 @@ pub fn cleanup_old_files() {
     else {
         return;
     };
-    let mut names = vec![
-        format!("{APP_EXE}.old"),
-        format!("{APP_EXE}.new"),
-    ];
+    let mut names = vec![format!("{APP_EXE}.old"), format!("{APP_EXE}.new")];
     // the running exe may have been renamed before the update
     if let Some(stem) = std::env::current_exe()
         .ok()
@@ -346,107 +344,30 @@ pub fn cleanup_stale_stages() {
                     && p.file_name()
                         .and_then(|n| n.to_str())
                         .is_some_and(|n| n.starts_with("aion-stabilizer-update-"));
-                if is_stage {
-                    let _ = fs::remove_dir_all(&p);
+                if is_stage && !sys::stage_owner_running(&p) {
+                    // Merely pinning the directory does not prevent recursive
+                    // deletion of its children. Claim it exclusively first.
+                    if let Ok(claim) = sys::StageClaim::acquire(&p, Duration::ZERO) {
+                        // Keep the claim open throughout recursive deletion;
+                        // its own file is removed after releasing the handle.
+                        if let Ok(children) = fs::read_dir(&p) {
+                            for child in children.flatten() {
+                                if child.file_name() == "active.lock" {
+                                    continue;
+                                }
+                                let path = child.path();
+                                if path.is_dir() {
+                                    let _ = fs::remove_dir_all(path);
+                                } else {
+                                    let _ = fs::remove_file(path);
+                                }
+                            }
+                        }
+                        drop(claim);
+                        let _ = fs::remove_dir_all(&p);
+                    }
                 }
             }
         }
     }
-}
-
-fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
-    copy_tree_level(src, dst, true)
-}
-
-/// `top` marks the app root, where user-editable KEEP files are skipped.
-fn copy_tree_level(src: &Path, dst: &Path, top: bool) -> Result<(), String> {
-    let rd = fs::read_dir(src).map_err(|e| e.to_string())?;
-    for e in rd {
-        let e = e.map_err(|e| e.to_string())?;
-        let name = e.file_name();
-        let s = e.path();
-        let d = dst.join(&name);
-        let ft = e.file_type().map_err(|e| e.to_string())?;
-        // reparse points/links must never be applied to the install
-        if ft.is_symlink() {
-            return Err(format!("refusing to copy link: {}", s.display()));
-        }
-        if ft.is_dir() {
-            fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-            copy_tree_level(&s, &d, false)?;
-            continue;
-        }
-        let fname = name.to_string_lossy();
-        // at the app root skip user-editable files and the already-staged exe
-        if top && (KEEP.contains(&fname.as_ref()) || fname == APP_EXE) {
-            continue;
-        }
-        // skip untouched files - avoids touching the WinDivert driver
-        // image, which stays locked by the kernel for the whole boot
-        if d.is_file() && same_file(&s, &d) {
-            continue;
-        }
-        copy_retry(&s, &d)?;
-    }
-    Ok(())
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (fs::read(a), fs::read(b)) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => false,
-    }
-}
-
-/// `foo.sys` -> `foo.sys.old` (rename-aside target for locked files)
-fn aside_path(d: &Path) -> PathBuf {
-    let mut p = d.as_os_str().to_os_string();
-    p.push(".old");
-    p.into()
-}
-
-/// Rename with retries - the just-relinquished exe can stay locked
-/// briefly by a virus scanner.
-fn rename_retry(s: &Path, d: &Path, tries: u32) -> Result<(), String> {
-    let mut last_err = String::new();
-    for _ in 0..tries {
-        match fs::rename(s, d) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                last_err = e.to_string();
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        }
-    }
-    Err(last_err)
-}
-
-/// Copy with retries - engine files can stay locked briefly after it
-/// stops. A file that stays locked (loaded WinDivert driver, leftover
-/// winws/cygwin process) cannot be opened for writing but CAN be renamed
-/// aside, same trick used for the running exe.
-fn copy_retry(s: &Path, d: &Path) -> Result<(), String> {
-    let mut last_err = String::new();
-    for _ in 0..8 {
-        match fs::copy(s, d) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                last_err = e.to_string();
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        }
-    }
-    if d.is_file() {
-        let aside = aside_path(d);
-        let _ = fs::remove_file(&aside);
-        if fs::rename(d, &aside).is_ok() {
-            if let Err(e) = fs::copy(s, d) {
-                let _ = fs::rename(&aside, d);
-                last_err = e.to_string();
-            } else {
-                return Ok(());
-            }
-        }
-    }
-    Err(format!("cannot write {}: {last_err}", d.display()))
 }
