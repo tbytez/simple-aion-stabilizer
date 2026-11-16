@@ -10,8 +10,14 @@ license:
 * WinDivert (WinDivert.dll / WinDivert64.sys) - https://www.reqrypt.org/windivert.html
   Windows packet capture/divert driver by basil00, LGPL v3.
 
-* native-windows-gui - https://github.com/gabdube/native-windows-gui
-  MIT license.
+* egui / eframe - https://github.com/emilk/egui
+  MIT/Apache-2.0 license.
+
+* tray-icon - https://github.com/tauri-apps/tray-icon
+  MIT/Apache-2.0 license.
+
+* Inter font - https://github.com/rsms/inter
+  SIL Open Font License 1.1.
 
 This application is an independent community project. It is NOT affiliated
 with, endorsed by, or connected to NCSoft, AION, AION 2, the zapret authors,

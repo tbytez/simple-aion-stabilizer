@@ -35,10 +35,11 @@ Concretely, it runs two well-known open-source tools locally on your PC:
 
 1. Download the zip from [Releases](../../releases), extract it.
 2. Run `AionStabilizer.exe` (admin rights - needed for the driver).
-3. Press **Start**, launch Aion, play.
-4. Press **Stop** when done.
+3. Click the big power button, launch Aion, play.
+4. Click it again to stop when done.
 
 Minimizing or closing the window keeps it running in the system tray.
+The app follows your Windows dark/light theme automatically.
 
 Handy option: tick **"Start engine automatically when Aion 2 launches"**
 and the app watches for the game - it starts the engine when Aion 2 runs

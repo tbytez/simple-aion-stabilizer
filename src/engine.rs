@@ -1,11 +1,10 @@
+#[cfg(windows)]
 use crate::core;
-use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 /// Manages the winws.exe (zapret) child process.
+/// On non-Windows hosts it drives `sleep` instead so the UI can be previewed.
 pub struct Engine {
     child: Option<Child>,
     /// true when the current run was started by the Aion watcher
@@ -47,7 +46,11 @@ impl Engine {
         }
     }
 
+    #[cfg(windows)]
     pub fn start(&mut self, app_dir: &Path, auto: bool) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         if self.is_running() {
             return Err("Engine is already running".to_string());
         }
@@ -58,6 +61,15 @@ impl Engine {
                 "winws.exe not found in {}",
                 app_dir.join("bin").display()
             ));
+        }
+
+        // Another zapret instance (ours from a zombie run, AXV, or a zapret
+        // service) would fight over the same WinDivert filters. Refuse cleanly.
+        if crate::procs::is_running("winws.exe") {
+            return Err(
+                "winws.exe is already running - another zapret instance is active. Stop it first."
+                    .to_string(),
+            );
         }
 
         let args = load_profile(app_dir)?;
@@ -79,13 +91,36 @@ impl Engine {
             .spawn()
             .map_err(|e| format!("Failed to start winws.exe: {e}"))?;
 
+        // If this app dies or is force-killed, the OS kills winws with it.
+        crate::sys::tie_child_to_process(child.id());
+
         self.child = Some(child);
         self.auto_started = auto;
         self.last_exit = None;
         Ok(())
     }
 
-    /// Kill our child plus any stray winws.exe left over from earlier runs.
+    /// Preview mode on non-Windows: a real long-lived child we can kill.
+    #[cfg(not(windows))]
+    pub fn start(&mut self, _app_dir: &Path, auto: bool) -> Result<(), String> {
+        if self.is_running() {
+            return Err("Engine is already running".to_string());
+        }
+        if std::env::var("AION_MOCK_FAIL").is_ok() {
+            return Err("mock failure".to_string());
+        }
+        let child = Command::new("sleep")
+            .arg("3600")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        self.child = Some(child);
+        self.auto_started = auto;
+        self.last_exit = None;
+        Ok(())
+    }
+
+    /// Kill our child. Foreign winws.exe instances are left alone - the job
+    /// object guarantees ours can never stray.
     pub fn stop(&mut self) {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
@@ -93,20 +128,17 @@ impl Engine {
         }
         self.auto_started = false;
         self.last_exit = None;
-        // belt & suspenders: sweep any stray winws.exe instances
-        let _ = Command::new("taskkill")
-            .args(["/F", "/IM", "winws.exe"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
     }
 }
 
 /// Parse profile.txt into a winws argument vector, writing the default
 /// profile when the file is missing.
+#[cfg(windows)]
 fn load_profile(app_dir: &Path) -> Result<Vec<String>, String> {
     let profile_path = app_dir.join("profile.txt");
     if !profile_path.is_file() {
-        write_default_profile(&profile_path)?;
+        std::fs::write(&profile_path, DEFAULT_PROFILE)
+            .map_err(|e| format!("Cannot write profile.txt: {e}"))?;
     }
 
     let text = std::fs::read_to_string(&profile_path)
@@ -117,8 +149,5 @@ fn load_profile(app_dir: &Path) -> Result<Vec<String>, String> {
     Ok(core::parse_profile_args(&text, &bin, &lists))
 }
 
-fn write_default_profile(path: &PathBuf) -> Result<(), String> {
-    std::fs::write(path, DEFAULT_PROFILE).map_err(|e| format!("Cannot write profile.txt: {e}"))
-}
-
+#[cfg(windows)]
 const DEFAULT_PROFILE: &str = include_str!("../assets/profile.txt");

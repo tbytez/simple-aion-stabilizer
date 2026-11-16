@@ -1,9 +1,10 @@
-//! Pure logic with no Windows dependencies — unit-testable on any OS.
+//! Pure logic with no Windows dependencies - unit-testable on any OS.
 
 /// Parse profile.txt content into a winws argument vector.
 ///
 /// `#` starts a comment line, tokens are whitespace-separated, and
 /// `{BIN}` / `{LISTS}` are replaced with the given directories.
+#[allow(dead_code)] // used on Windows + in tests
 pub fn parse_profile_args(text: &str, bin_dir: &str, lists_dir: &str) -> Vec<String> {
     let mut args = Vec::new();
     for line in text.lines() {
@@ -81,6 +82,8 @@ pub const DEFAULT_WATCH_PROCESSES: &[&str] = &["aion2.exe", "aion.bin", "aion.ex
 
 /// True when any watch name appears as an image name in `tasklist /FO CSV`
 /// output. Locale-independent: only matches the quoted image-name column.
+/// Kept for tests and as a fallback reference; the runtime uses Toolhelp.
+#[allow(dead_code)]
 pub fn process_in_tasklist(csv: &str, watch_names: &[String]) -> bool {
     for line in csv.lines() {
         let line = line.trim();
