@@ -5,6 +5,7 @@ mod core;
 mod engine;
 mod manifest;
 mod procs;
+mod rendering;
 #[cfg(windows)]
 mod sys;
 mod theme;
@@ -77,13 +78,15 @@ fn main() {
 
     let options = eframe::NativeOptions {
         viewport,
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: rendering::configuration(),
         ..Default::default()
     };
 
     let cfg_for_app = cfg;
     let start_engine = cfg_for_app.autostart_engine;
 
-    let _ = eframe::run_native(
+    let result = eframe::run_native(
         TITLE,
         options,
         Box::new(move |cc| {
@@ -118,4 +121,22 @@ fn main() {
             Ok(Box::new(ui::App::new(ctrl)))
         }),
     );
+    if let Err(error) = result {
+        eprintln!("Unable to start {TITLE}: {error}");
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            let message: Vec<u16> = format!("Unable to start {TITLE}: {error}\n\nWindows 10 or newer with Microsoft WARP support is required.")
+                .encode_utf16().chain(Some(0)).collect();
+            let title: Vec<u16> = TITLE.encode_utf16().chain(Some(0)).collect();
+            unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    message.as_ptr(),
+                    title.as_ptr(),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+    }
 }

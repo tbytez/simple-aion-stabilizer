@@ -116,7 +116,7 @@ impl eframe::App for App {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         self.ctrl.send(Cmd::Shutdown);
     }
 }

@@ -33,6 +33,9 @@ Concretely, it runs two well-known open-source tools locally on your PC:
 
 ## Use it
 
+Requires Windows 10 or newer. The UI uses Microsoft WARP (CPU rendering)
+instead of the game GPU to avoid NVIDIA OpenGL overlay detection.
+
 1. Download the zip from [Releases](../../releases), extract it.
 2. Run `AionStabilizer.exe` (admin rights - needed for the driver).
 3. Click the big power button, launch Aion, play.
@@ -56,6 +59,16 @@ disappears, run `update-recovery.cmd` in the app folder to restore it.
 To remove the app: quit it from the tray (stopping the engine also
 unloads the WinDivert driver), then delete the folder - no reboot needed.
 If files are still locked, run `uninstall.cmd` as administrator first.
+
+## Antivirus reports
+
+Avast has been reported to flag `AionStabilizer.exe` from v0.1.3. The
+cause and clearance are not yet verified. Windows version metadata and
+signed update manifests identify the release; the manifest signature is
+not an Authenticode publisher certificate and does not guarantee antivirus
+acceptance. Do not disable antivirus protection to install the app.
+Report the detected file and detection name through
+[Avast's sample review form](https://www.avast.com/submit-a-sample).
 
 ## Planned
 
