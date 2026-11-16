@@ -40,6 +40,11 @@ Concretely, it runs two well-known open-source tools locally on your PC:
 
 Minimizing or closing the window keeps it running in the system tray.
 
+Handy option: tick **"Start engine automatically when Aion 2 launches"**
+and the app watches for the game - it starts the engine when Aion 2 runs
+and stops it when you quit. (Watched exe names can be changed with
+`watch_process=` in `config.ini`.)
+
 ## Safety notes
 
 - This is the same technique used by AXV Gaming Control Center and the

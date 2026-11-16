@@ -8,6 +8,7 @@ version = "1.0.0"
 dependencies = [
  "embed-resource",
  "native-windows-gui",
+ "winapi",
 ]
 
 [[package]]

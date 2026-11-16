@@ -6,8 +6,9 @@ build = "build.rs"
 description = "Simple tray-based Aion connection stabilizer for Windows (zapret/winws frontend)"
 license = "MIT"
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 native-windows-gui = "1.0"
+winapi = { version = "0.3", features = ["synchapi", "errhandlingapi", "winerror", "ntdef"] }
 
 [build-dependencies]
 embed-resource = "2"
