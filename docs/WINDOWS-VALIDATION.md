@@ -179,3 +179,22 @@ On Windows, inspect both ring edges, icon alignment and keyboard focus at
 the already-working resize and mixed-monitor interactions to check for
 regressions. Native Windows visual/performance checks have not been run in
 the macOS environment. Tray and executable icon assets are unchanged.
+
+## v0.1.10 single-column polish and identity assets
+
+This release applies the approved compact visual spacing and uses the same
+vector A mark for the header, window/executable icon and state-colored tray
+icons. The default remains 420x700 logical points. Existing responsive
+thresholds, scrolling, focus handling and all existing UI test assertions
+are unchanged. Network profiles, engine/controller, updater, native DPI and
+renderer selection remain identical to v0.1.9.
+
+Independent tests pass 49 app tests and eight signing-tool tests, including
+the complete layout/scale and input matrix. Strict Clippy passes on host and
+Windows targets. Native icon sizes and repeatable generation are verified.
+Actual macOS Rust captures cover dark, light and running states; Windows
+icon-cache, tray legibility and physical monitor/resize checks remain pending.
+
+NVIDIA adapter-preference changes belong to a separate, unpublished test
+build. They are not included in this release. Neither CPU rendering nor
+cross-compilation establishes that the NVIDIA FPS overlay is prevented.

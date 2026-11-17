@@ -199,6 +199,8 @@ pub fn icon(painter: &egui::Painter, kind: Icon, rect: Rect, color: Color32) {
 }
 
 /// Header brand mark: gradient ring with an "A" glyph on a 32-unit grid.
+/// Mirrors assets/brand.svg, the single vector source for every identity
+/// surface (window, taskbar, exe and tray icons).
 pub fn brand_mark(
     painter: &egui::Painter,
     rect: Rect,
@@ -207,15 +209,15 @@ pub fn brand_mark(
     glyph: Color32,
 ) {
     let unit = rect.width().min(rect.height()) / 32.0;
-    gradient_ring(painter, rect.center(), 10.5 * unit, 13.5 * unit, ring_a, ring_b);
+    gradient_ring(painter, rect.center(), 10.7 * unit, 13.3 * unit, ring_a, ring_b);
     let g = Glyph {
         painter,
         origin: rect.center() - vec2(16.0, 16.0) * unit,
         unit,
-        stroke: Stroke::new(1.8 * unit, glyph),
+        stroke: Stroke::new(1.9 * unit, glyph),
     };
-    g.open(&[g.pt(10.0, 22.0), g.pt(16.0, 9.0), g.pt(22.0, 22.0)]);
-    g.open(&[g.pt(13.0, 17.0), g.pt(19.0, 17.0)]);
+    g.open(&[g.pt(9.5, 23.0), g.pt(16.0, 9.0), g.pt(22.5, 23.0)]);
+    g.open(&[g.pt(12.5, 18.0), g.pt(19.5, 18.0)]);
 }
 
 /// One icon being painted: maps the 24-unit grid into a target rect.

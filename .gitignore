@@ -2,6 +2,7 @@
 /release-build/
 /dist/
 *.zip
+__pycache__/
 
 # update signing keys must never be committed
 release-keys/

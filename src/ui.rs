@@ -78,7 +78,7 @@ impl App {
                                 .color(pal.dim),
                         );
                     });
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                     // Wider windows use the extra space, while narrow windows
                     // stack the cards. Text wraps at the actual available width.
                     if ui.available_width() >= 760.0 {
@@ -88,7 +88,7 @@ impl App {
                         });
                     } else {
                         self.hero(ui);
-                        ui.add_space(4.0);
+                        ui.add_space(2.0);
                         self.settings(ui);
                     }
                     if let Some(error) = self.status.error.clone() {
@@ -110,7 +110,7 @@ impl App {
                         }
                     }
                     if let Some(update) = self.status.update.clone() {
-                        ui.separator();
+                        Self::hairline(ui);
                         match update.state {
                             UpdateState::Available => {
                                 ui.label(format!("Version {} is available.", update.version));
@@ -135,8 +135,8 @@ impl App {
                             }
                         }
                     }
-                    ui.separator();
-                    ui.add_space(3.0);
+                    Self::hairline(ui);
+                    ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
                         let (icon, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
@@ -174,6 +174,11 @@ impl App {
             });
     }
 
+    /// Hairline divider matching the card borders' 1pt rows.
+    fn hairline(ui: &mut egui::Ui) {
+        ui.add(egui::Separator::default().spacing(1.0));
+    }
+
     /// Small tracked section label shared by both cards.
     fn eyebrow(text: &str, pal: theme::Palette) -> RichText {
         RichText::new(text)
@@ -188,7 +193,7 @@ impl App {
         egui::Frame::new()
             .fill(color.gamma_multiply(0.10))
             .corner_radius(10)
-            .inner_margin(egui::Margin::symmetric(10, 5))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -221,11 +226,11 @@ impl App {
             let response = ui
                 .add_enabled_ui(!busy, |ui| {
                     let (rect, response) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 166.0), Sense::click());
+                        ui.allocate_exact_size(vec2(ui.available_width(), 161.0), Sense::click());
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
                     });
-                    let center = Pos2::new(rect.center().x, rect.top() + 67.0);
+                    let center = Pos2::new(rect.center().x, rect.top() + 64.0);
                     let painter = ui.painter();
                     let feather = draw::feather(ui.ctx());
                     let radius = if response.is_pointer_button_down_on() {
@@ -311,20 +316,20 @@ impl App {
                     painter.galley(
                         Pos2::new(
                             rect.center().x - galley.size().x / 2.0,
-                            rect.top() + 11.0 - galley.size().y / 2.0,
+                            rect.top() + 7.0 - galley.size().y / 2.0,
                         ),
                         galley,
                         pal.dim,
                     );
                     painter.text(
-                        Pos2::new(rect.center().x, rect.top() + 127.0),
+                        Pos2::new(rect.center().x, rect.top() + 125.0),
                         Align2::CENTER_CENTER,
                         if running { "RUNNING" } else { "STOPPED" },
                         FontId::new(19.0, FontFamily::Name("sb".into())),
                         if running { end } else { pal.text },
                     );
                     painter.text(
-                        Pos2::new(rect.center().x, rect.top() + 148.0),
+                        Pos2::new(rect.center().x, rect.top() + 146.0),
                         Align2::CENTER_CENTER,
                         label,
                         FontId::proportional(12.5),
@@ -347,7 +352,7 @@ impl App {
                     Cmd::Start { auto: false }
                 });
             }
-            ui.add_space(4.0);
+            ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 let game = if !self.status.watch {
                     "Detection off"
@@ -377,6 +382,7 @@ impl App {
                     pal.accent_a,
                 );
             });
+            ui.add_space(2.0);
             ui.collapsing(RichText::new("Connection help").size(12.0).color(pal.dim), |ui| {
                 ui.label("Start the engine before opening Aion, or enable Start engine on app open. Game detection starts only after the game opens. The default follows AXV’s compatibility rules with targeted game TCP. Broad game UDP injection is disabled. If login fails, stop the engine and retry. A running engine does not confirm game connectivity.");
             });
@@ -474,7 +480,7 @@ impl App {
         Self::card(ui, |ui| {
             let pal = theme::palette(ui.ctx());
             ui.label(Self::eyebrow("SETTINGS", pal));
-            ui.add_space(6.0);
+            ui.add_space(2.0);
             let mut watch = self.status.watch;
             if Self::setting(
                 ui,
@@ -485,7 +491,7 @@ impl App {
             ) {
                 self.ctrl.send(Cmd::SetWatch(watch));
             }
-            ui.separator();
+            Self::hairline(ui);
             let mut startup = self.status.startup_engine;
             if Self::setting(
                 ui,
@@ -496,7 +502,7 @@ impl App {
             ) {
                 self.ctrl.send(Cmd::SetStartupEngine(startup));
             }
-            ui.separator();
+            Self::hairline(ui);
             let mut autostart = self.status.autostart;
             if Self::setting(
                 ui,
@@ -507,8 +513,8 @@ impl App {
             ) {
                 self.ctrl.send(Cmd::SetAutostart(autostart));
             }
-            ui.separator();
-            ui.add_space(3.0);
+            Self::hairline(ui);
+            ui.add_space(2.0);
             let checking = matches!(self.status.check, CheckState::Checking);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 7.0;
@@ -531,7 +537,6 @@ impl App {
                     .color(pal.dim),
                 );
             });
-            ui.add_space(3.0);
             let button = egui::Button::new(
                 RichText::new("Check for updates")
                     .size(12.0)
