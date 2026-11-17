@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "aion-stabilizer"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ed25519-dalek",
  "eframe",

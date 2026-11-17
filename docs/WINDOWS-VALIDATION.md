@@ -198,3 +198,22 @@ icon-cache, tray legibility and physical monitor/resize checks remain pending.
 NVIDIA adapter-preference changes belong to a separate, unpublished test
 build. They are not included in this release. Neither CPU rendering nor
 cross-compilation establishes that the NVIDIA FPS overlay is prevented.
+
+## v0.1.11 settings alignment and footer fit
+
+Settings icons and switches now center on their complete text blocks,
+including wrapped subtitles. Compact chip/status/footer rows remove accidental
+minimum row height so the footer and update button fit the default 420x700
+logical-point window. Font sizes, control targets, responsive thresholds,
+scroll/focus handling, native DPI, renderer and engine behavior are unchanged.
+
+Validation: 52 app tests and eight signing-tool tests pass, with three new
+regressions covering painted icon/switch alignment, wrapped subtitles and
+default-window footer/button visibility across themes, states and scales.
+Strict Clippy passes on host and Windows targets. Actual macOS captures show
+the default window in dark, light and running states. Native Windows visual,
+resize, mixed-DPI and update/relaunch checks remain unverified on this host.
+
+The unpublished WARP-preference experiment suppressed the overlay on the
+user's Windows setup but caused severe resize lag. It is excluded; this
+release retains the stable hardware-preferred renderer.

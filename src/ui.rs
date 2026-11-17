@@ -137,16 +137,30 @@ impl App {
                     }
                     Self::hairline(ui);
                     ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        let (icon, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
-                        draw::icon(ui.painter(), Icon::Tray, icon, pal.dim);
-                        ui.label(
-                            RichText::new("Closing or minimizing keeps the app in the tray.")
-                                .size(11.0)
-                                .color(pal.dim),
-                        );
-                    });
+                    ui.allocate_ui_with_layout(
+                        vec2(ui.available_width(), 0.0),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 7.0;
+                            let (icon, _) =
+                                ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                            let label = ui
+                                .label(
+                                    RichText::new(
+                                        "Closing or minimizing keeps the app in the tray.",
+                                    )
+                                    .size(11.0)
+                                    .color(pal.dim),
+                                )
+                                .rect;
+                            draw::icon(
+                                ui.painter(),
+                                Icon::Tray,
+                                Self::vcenter(icon, label.center().y),
+                                pal.dim,
+                            );
+                        },
+                    );
                 });
                 // egui tracks keyboard focus independently of scrolling.
                 // Reveal a newly focused control, including controls reached
@@ -189,20 +203,28 @@ impl App {
     }
 
     /// Status pill under the power button; optional leading icon.
+    /// Compact row: ui.horizontal would force a 32pt interact_size floor.
     fn chip(ui: &mut egui::Ui, icon: Option<Icon>, text: &str, color: Color32) {
         egui::Frame::new()
             .fill(color.gamma_multiply(0.10))
             .corner_radius(10)
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    if let Some(kind) = icon {
-                        let (rect, _) = ui.allocate_exact_size(vec2(11.0, 11.0), Sense::hover());
-                        draw::icon(ui.painter(), kind, rect, color);
-                    }
-                    ui.label(RichText::new(text).size(11.0).color(color));
-                });
+                // The frame's content ui inherits horizontal_wrapped's
+                // centered row layout: placing children in it directly puts
+                // every chip on the same centered band so their pills align.
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let icon_rect = icon
+                    .map(|_| ui.allocate_exact_size(vec2(11.0, 11.0), Sense::hover()).0);
+                let label = ui.label(RichText::new(text).size(11.0).color(color)).rect;
+                if let (Some(kind), Some(rect)) = (icon, icon_rect) {
+                    draw::icon(
+                        ui.painter(),
+                        kind,
+                        Self::vcenter(rect, label.center().y),
+                        color,
+                    );
+                }
             });
     }
 
@@ -389,16 +411,23 @@ impl App {
         });
     }
 
+    /// Move a horizontally positioned rect so it centers on the finalized
+    /// text block, keeping its size. Allocation order cannot center rows
+    /// correctly when the text column's height is only known afterwards.
+    fn vcenter(rect: egui::Rect, center_y: f32) -> egui::Rect {
+        egui::Rect::from_center_size(Pos2::new(rect.center().x, center_y), rect.size())
+    }
+
     fn setting(ui: &mut egui::Ui, icon: Icon, title: &str, subtitle: &str, value: &mut bool) -> bool {
         let pal = theme::palette(ui.ctx());
         let row = ui.allocate_ui_with_layout(
             vec2(ui.available_width(), 0.0),
-            egui::Layout::left_to_right(egui::Align::Center),
+            egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
                 let (icon_rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                 ui.add_space(10.0);
                 let text_width = (ui.available_width() - 54.0).max(80.0);
-                ui.allocate_ui_with_layout(
+                let text = ui.allocate_ui_with_layout(
                     vec2(text_width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
@@ -416,10 +445,10 @@ impl App {
                     },
                 );
                 let (switch_rect, _) = ui.allocate_exact_size(vec2(44.0, 32.0), Sense::hover());
-                (icon_rect, switch_rect)
+                (icon_rect, text.response.rect, switch_rect)
             },
         );
-        let (icon_rect, switch_rect) = row.inner;
+        let (icon_rect, text_rect, switch_rect) = row.inner;
         let mut response = ui.interact(
             row.response.rect,
             ui.make_persistent_id(title),
@@ -433,14 +462,19 @@ impl App {
             response.mark_changed();
         }
         // Paint after interaction so the visuals can answer hover and focus.
+        // Icon and switch ride the center of the complete text block.
         let painter = ui.painter();
+        let center = text_rect.center().y;
         draw::icon(
             painter,
             icon,
-            icon_rect,
+            Self::vcenter(icon_rect, center),
             if response.hovered() { pal.text } else { pal.dim },
         );
-        let track = egui::Rect::from_center_size(switch_rect.center(), vec2(36.0, 20.0));
+        let track = egui::Rect::from_center_size(
+            Pos2::new(switch_rect.center().x, center),
+            vec2(36.0, 20.0),
+        );
         let track_col = if *value { pal.accent_a } else { pal.off_a };
         painter.rect_filled(
             track,
@@ -516,27 +550,33 @@ impl App {
             Self::hairline(ui);
             ui.add_space(2.0);
             let checking = matches!(self.status.check, CheckState::Checking);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 7.0;
-                let (kind, tint) = match self.status.check {
-                    CheckState::Checking => (Icon::Update, pal.dim),
-                    CheckState::UpToDate => (Icon::Check, draw::success(ui.ctx())),
-                    CheckState::Failed => (Icon::Update, pal.danger),
-                    CheckState::Idle => (Icon::Update, pal.dim),
-                };
-                let (rect, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
-                draw::icon(ui.painter(), kind, rect, tint);
-                ui.label(
-                    RichText::new(match self.status.check {
-                        CheckState::Checking => "Checking for updates…",
-                        CheckState::UpToDate => "Latest version installed.",
-                        CheckState::Failed => "Update check failed. Try again.",
-                        CheckState::Idle => "Updates are checked on startup.",
-                    })
-                    .size(11.0)
-                    .color(pal.dim),
-                );
-            });
+            ui.allocate_ui_with_layout(
+                vec2(ui.available_width(), 0.0),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    let (kind, tint) = match self.status.check {
+                        CheckState::Checking => (Icon::Update, pal.dim),
+                        CheckState::UpToDate => (Icon::Check, draw::success(ui.ctx())),
+                        CheckState::Failed => (Icon::Update, pal.danger),
+                        CheckState::Idle => (Icon::Update, pal.dim),
+                    };
+                    let (rect, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                    let label = ui
+                        .label(
+                            RichText::new(match self.status.check {
+                                CheckState::Checking => "Checking for updates…",
+                                CheckState::UpToDate => "Latest version installed.",
+                                CheckState::Failed => "Update check failed. Try again.",
+                                CheckState::Idle => "Updates are checked on startup.",
+                            })
+                            .size(11.0)
+                            .color(pal.dim),
+                        )
+                        .rect;
+                    draw::icon(ui.painter(), kind, Self::vcenter(rect, label.center().y), tint);
+                },
+            );
             let button = egui::Button::new(
                 RichText::new("Check for updates")
                     .size(12.0)
@@ -625,12 +665,40 @@ mod tests {
         5.0, 6.0, 8.0,
     ];
 
+    /// Painted non-text output, classified for layout assertions: filled
+    /// rects (cards, chips, switch tracks), stroked vector parts (icons,
+    /// hairlines) and gradient meshes (rings, brand mark).
+    #[derive(Clone, Copy, PartialEq)]
+    enum DrawKind {
+        Fill,
+        Stroke,
+        Mesh,
+    }
+
+    fn shape_draws(output: &egui::FullOutput) -> Vec<(Rect, DrawKind)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| {
+                let bounds = clipped.shape.visual_bounding_rect();
+                let kind = match &clipped.shape {
+                    Shape::Rect(r) if r.fill != Color32::TRANSPARENT => DrawKind::Fill,
+                    Shape::Mesh(_) => DrawKind::Mesh,
+                    Shape::Text(_) => return None,
+                    _ => DrawKind::Stroke,
+                };
+                Some((bounds, kind))
+            })
+            .collect()
+    }
+
     struct Harness {
         ctx: egui::Context,
         app: App,
         commands: Receiver<Cmd>,
         time: f64,
         text: Vec<(String, Rect)>,
+        draws: Vec<(Rect, DrawKind)>,
     }
 
     impl Harness {
@@ -645,6 +713,7 @@ mod tests {
                 commands,
                 time: 0.0,
                 text: Vec::new(),
+                draws: Vec::new(),
             }
         }
 
@@ -686,17 +755,22 @@ mod tests {
                     }
                 }
             }
+            self.draws = shape_draws(&output);
             let meshes = self.ctx.tessellate(output.shapes, output.pixels_per_point);
             if size.x > 0.0 && size.y > 0.0 {
                 assert!(!meshes.is_empty());
             }
         }
 
-        fn find(&self, label: &str) -> Option<Pos2> {
+        fn rect_of(&self, label: &str) -> Option<Rect> {
             self.text
                 .iter()
                 .find(|(text, _)| text == label)
-                .map(|(_, rect)| rect.center())
+                .map(|(_, rect)| *rect)
+        }
+
+        fn find(&self, label: &str) -> Option<Pos2> {
+            self.rect_of(label).map(|rect| rect.center())
         }
 
         fn click(&mut self, label: &str, size: Vec2, scale: f32) {
@@ -960,4 +1034,216 @@ mod tests {
         assert!(matches!(h.commands.try_recv(), Ok(Cmd::SetWatch(true))));
         assert!(h.commands.try_recv().is_err());
     }
+
+    /// The three settings rows: painted icon bounds, painted switch
+    /// track and the full title+subtitle text block must all share one
+    /// vertical center. Baseline painted the icon ~16pt high (on the
+    /// title line) and the track ~4.5pt high.
+    impl Harness {
+        fn assert_setting_row(&self, title: &str, subtitle: &str) {
+            let title_rect = self
+                .rect_of(title)
+                .unwrap_or_else(|| panic!("{title} not painted"));
+            let sub_rect = self
+                .rect_of(subtitle)
+                .unwrap_or_else(|| panic!("{subtitle} not painted"));
+            let block = title_rect.union(sub_rect);
+            let center = block.center().y;
+            // Icons are ~18pt vectors centered on the block; search a
+            // little beyond the text so a misplaced icon still fails
+            // instead of just looking absent.
+            let band = block.expand(12.0);
+            let mut icon = Rect::NOTHING;
+            for &(bounds, kind) in &self.draws {
+                let c = bounds.center();
+                // Icons sit in the 28pt column immediately left of the
+                // text; in two-column layouts the hero's vectors are
+                // further left and must not be mistaken for them.
+                if kind != DrawKind::Fill
+                    && c.x > block.left() - 36.0
+                    && c.x < block.left() - 4.0
+                    && c.y > band.top()
+                    && c.y < band.bottom()
+                    && bounds.width() <= 24.0
+                    && bounds.height() <= 24.0
+                {
+                    icon = icon.union(bounds);
+                }
+            }
+            assert!(icon.is_finite(), "{title}: no painted icon");
+            // The switch track is the only ~36x20 filled pill in a row.
+            let mut track = Rect::NOTHING;
+            for &(bounds, kind) in &self.draws {
+                if kind == DrawKind::Fill
+                    && (bounds.width() - 36.0).abs() <= 2.0
+                    && (bounds.height() - 20.0).abs() <= 2.0
+                    && bounds.center().y > band.top()
+                    && bounds.center().y < band.bottom()
+                {
+                    track = track.union(bounds);
+                }
+            }
+            assert!(track.is_finite(), "{title}: no painted switch track");
+            assert!(
+                (icon.center().y - center).abs() <= 2.0,
+                "{title}: icon center {:.1} vs text center {:.1} ({icon:?} {block:?})",
+                icon.center().y,
+                center
+            );
+            assert!(
+                (track.center().y - center).abs() <= 2.0,
+                "{title}: switch center {:.1} vs text center {:.1} ({track:?} {block:?})",
+                track.center().y,
+                center
+            );
+        }
+    }
+
+    #[test]
+    fn settings_icons_and_switches_center_on_text_blocks() {
+        const ROWS: [(&str, &str); 3] = [
+            ("Auto-start with Aion", "Start and stop with the game"),
+            ("Start engine on app open", "Turn on when this app opens"),
+            ("Launch with Windows", "Start in the tray on login"),
+        ];
+        let mut h = Harness::new();
+        for theme in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
+            h.ctx.set_theme(theme);
+            for &scale in SCALES {
+                // Single column, the narrow scrolling floor and the
+                // two-column layout above the 760pt breakpoint.
+                for width in [300.0, 420.0, 460.0, 792.0] {
+                    h.frame(vec2(width, 700.0), scale, vec![]);
+                    for (title, subtitle) in ROWS {
+                        h.assert_setting_row(title, subtitle);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A subtitle wrapped to several lines makes the text block taller
+    /// than icon and switch combined; they must still center on it.
+    #[test]
+    fn setting_row_alignment_holds_when_subtitle_wraps() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx);
+        let mut value = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(220.0, 400.0))),
+                ..Default::default()
+            },
+            |ui| {
+                ui.allocate_ui_with_layout(
+                    vec2(140.0, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        App::setting(
+                            ui,
+                            Icon::Game,
+                            "Wrapped",
+                            "A subtitle long enough to wrap onto a second line",
+                            &mut value,
+                        );
+                    },
+                );
+            },
+        );
+        output.textures_delta.clear();
+        let mut block = Rect::NOTHING;
+        let mut wrapped_subtitle = false;
+        let mut icon = Rect::NOTHING;
+        let mut track = Rect::NOTHING;
+        let mut text_left = f32::INFINITY;
+        for clipped in &output.shapes {
+            if let Shape::Text(text) = &clipped.shape {
+                let bounds = Rect::from_min_size(text.pos, text.galley.size());
+                if matches!(text.galley.text(), "Wrapped" | "A subtitle long enough to wrap onto a second line") {
+                    text_left = text_left.min(bounds.left());
+                    if text.galley.text() != "Wrapped" {
+                        wrapped_subtitle = bounds.height() > 20.0;
+                    }
+                    block = block.union(bounds);
+                }
+            }
+        }
+        assert!(wrapped_subtitle, "subtitle must actually wrap");
+        for &(bounds, kind) in &shape_draws(&output) {
+            let c = bounds.center();
+            if kind != DrawKind::Fill
+                && c.x < text_left - 4.0
+                && bounds.width() <= 24.0
+                && bounds.height() <= 24.0
+            {
+                icon = icon.union(bounds);
+            }
+            if kind == DrawKind::Fill
+                && (bounds.width() - 36.0).abs() <= 2.0
+                && (bounds.height() - 20.0).abs() <= 2.0
+            {
+                track = track.union(bounds);
+            }
+        }
+        let center = block.center().y;
+        assert!(icon.is_finite(), "icon painted");
+        assert!(track.is_finite(), "switch track painted");
+        assert!(
+            (icon.center().y - center).abs() <= 2.0,
+            "wrapped row icon center {:.1} vs text center {:.1}",
+            icon.center().y,
+            center
+        );
+        assert!(
+            (track.center().y - center).abs() <= 2.0,
+            "wrapped row switch center {:.1} vs text center {:.1}",
+            track.center().y,
+            center
+        );
+    }
+
+    /// Default window: the whole footer line and the update button are
+    /// reachable without scrolling in every ordinary state, keeping the
+    /// designed 16pt bottom margin. Only expanded banners may scroll.
+    #[test]
+    fn footer_and_update_button_fit_default_window_without_scrolling() {
+        const FOOTER: &str = "Closing or minimizing keeps the app in the tray.";
+        let mut h = Harness::new();
+        for theme in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
+            h.ctx.set_theme(theme);
+            for &scale in &[1.0, 1.25, 1.5, 2.0, 2.625] {
+                for running in [false, true] {
+                    for (check_idx, check) in [
+                        CheckState::Idle,
+                        CheckState::Checking,
+                        CheckState::UpToDate,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        h.app.status.running = running;
+                        h.app.status.game_present = running;
+                        h.app.status.check = check;
+                        h.frame(vec2(420.0, 700.0), scale, vec![]);
+                        let footer = h
+                            .rect_of(FOOTER)
+                            .unwrap_or_else(|| panic!("footer must be visible without scrolling (theme {theme:?}, scale {scale}, running {running}, check state {check_idx})"));
+                        let button = h
+                            .rect_of("Check for updates")
+                            .expect("update button must be visible");
+                        assert!(
+                            footer.top() > button.bottom(),
+                            "footer below update button: {footer:?} {button:?}"
+                        );
+                        assert!(
+                            footer.bottom() <= 700.0 - 16.0,
+                            "footer keeps the 16pt bottom margin: {footer:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
 }
