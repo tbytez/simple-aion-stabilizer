@@ -136,3 +136,8 @@ in the release notes body.
 Signing tool: `cargo run -p sign-manifest -- generate|sign|verify|check`
 (see RELEASING.md). Private keys live in release-keys/ - gitignored,
 never commit.
+
+## README is user-approved copy
+
+README.md content was written and approved by the user. Do not change it
+without explicit user approval.
