@@ -41,3 +41,8 @@ release includes the upstream fix, then rerun native mixed-DPI drag testing.
 Tests verify policy selection and exact preservation of supplied rectangles.
 They do not simulate Windows message dispatch or prove native drag behavior
 on the user's hardware. Test by hand across a real mixed-DPI boundary.
+
+Downstream v0.1.12: work-area-aware minimum tracking and initial client size;
+floor the single DPI-change target rectangle at the approved minimum without
+moving its origin or adding another resize. Small window icons use cached
+alpha-aware RGBA resampling at native DPI and refresh on DPI change.

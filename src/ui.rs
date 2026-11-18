@@ -823,6 +823,8 @@ mod tests {
                 for size in [
                     vec2(300.0, 240.0),
                     vec2(300.0, 1200.0),
+                    vec2(360.0, 480.0),
+                    vec2(360.0, 700.0),
                     vec2(1600.0, 240.0),
                     vec2(460.0, 680.0),
                     vec2(791.0, 600.0),
@@ -1247,3 +1249,7 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "../tools/cpu-renderer/app_capture.rs"]
+mod cpu_capture;

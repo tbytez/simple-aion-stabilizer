@@ -1,0 +1,9 @@
+[package]
+name = "aion-cpu-renderer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+[dependencies]
+egui = "0.37"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }

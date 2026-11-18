@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use std::{fmt, io, mem};
 
 use cursor_icon::CursorIcon;
@@ -71,6 +72,8 @@ struct RaiiIcon {
 #[derive(Clone)]
 pub struct WinIcon {
     inner: Arc<RaiiIcon>,
+    source: Option<Arc<(Vec<u8>, u32, u32)>>,
+    scaled: Arc<Mutex<HashMap<u32, WinIcon>>>,
 }
 
 unsafe impl Send for WinIcon {}
@@ -145,18 +148,34 @@ impl WinIcon {
     }
 
     pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, BadIcon> {
+        let source = Arc::new((rgba.clone(), width, height));
         let rgba_icon = RgbaIcon::from_rgba(rgba, width, height)?;
-        rgba_icon.into_windows_icon()
+        let mut icon = rgba_icon.into_windows_icon()?;
+        icon.source = Some(source);
+        Ok(icon)
     }
 
     pub fn set_for_window(&self, hwnd: HWND, icon_type: IconType) {
-        unsafe {
-            SendMessageW(hwnd, WM_SETICON, icon_type as usize, self.as_raw_handle());
+        let mut handle = self.as_raw_handle();
+        if matches!(icon_type, IconType::Small) {
+            if let Some(source) = &self.source {
+                let dpi = (*util::GET_DPI_FOR_WINDOW).map(|get| unsafe { get(hwnd) }).unwrap_or(96).max(96);
+                let side = ((16 * dpi + 48) / 96).clamp(16, 256);
+                let mut cache = self.scaled.lock().unwrap();
+                if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(side) {
+                    let rgba = super::icon_pixels::resize(&source.0, source.1, source.2, side);
+                    if let Ok(icon) = RgbaIcon::from_rgba(rgba, side, side).and_then(|i| i.into_windows_icon()) {
+                        entry.insert(icon);
+                    }
+                }
+                if let Some(icon) = cache.get(&side) { handle = icon.as_raw_handle(); }
+            }
         }
+        unsafe { SendMessageW(hwnd, WM_SETICON, icon_type as usize, handle); }
     }
 
     fn from_handle(handle: HICON) -> Self {
-        Self { inner: Arc::new(RaiiIcon { handle }) }
+        Self { inner: Arc::new(RaiiIcon { handle }), source: None, scaled: Arc::new(Mutex::new(HashMap::new())) }
     }
 }
 

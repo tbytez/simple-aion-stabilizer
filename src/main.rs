@@ -74,6 +74,7 @@ fn main() {
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([420.0, 700.0])
+        .with_min_inner_size([360.0, 700.0])
         // Do not force a logical minimum larger than a small high-DPI
         // display. The UI scrolls in both axes below its normal layout width.
         .with_clamp_size_to_monitor_size(true)
@@ -132,7 +133,7 @@ fn main() {
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-            let message: Vec<u16> = format!("Unable to start {TITLE}: {error}\n\nWindows 10 or newer with DirectX 12 support is required.")
+            let message: Vec<u16> = format!("Unable to start {TITLE}: {error}\n\nWindows 10 or newer is required.")
                 .encode_utf16().chain(Some(0)).collect();
             let title: Vec<u16> = TITLE.encode_utf16().chain(Some(0)).collect();
             unsafe {
@@ -152,3 +153,11 @@ fn main() {
 #[cfg(test)]
 #[path = "../vendor/winit/src/platform_impl/windows/dpi_resize_policy.rs"]
 mod native_dpi_regression_tests;
+
+#[cfg(test)]
+#[path = "../vendor/winit/src/platform_impl/windows/size_constraints.rs"]
+mod native_minimum_regression_tests;
+
+#[cfg(test)]
+#[path = "../vendor/winit/src/platform_impl/windows/icon_pixels.rs"]
+mod native_icon_regression_tests;

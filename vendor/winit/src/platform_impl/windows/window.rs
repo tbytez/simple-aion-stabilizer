@@ -1270,6 +1270,18 @@ impl InitData<'_> {
             .unwrap_or_else(|| PhysicalSize::new(f64::MAX, f64::MAX).into());
         let min_size = attributes.min_inner_size.unwrap_or_else(|| PhysicalSize::new(0, 0).into());
         let clamped_size = Size::clamp(size, min_size, max_size, win.scale_factor());
+        // A logical minimum can exceed a small/high-DPI monitor. Cap the initial
+        // client size after accounting for the real non-client frame as well.
+        let clamped_size = if attributes.min_inner_size.is_some() {
+            let client = clamped_size.to_physical::<u32>(win.scale_factor());
+            let flags = win.window_state_lock().window_flags;
+            let outer = flags.adjust_size(win.hwnd(), client);
+            let [w, h] = super::size_constraints::cap_client(
+                [client.width, client.height], [outer.width, outer.height],
+                monitor::work_area_size(win.hwnd()),
+            );
+            PhysicalSize::new(w, h).into()
+        } else { clamped_size };
         win.request_inner_size(clamped_size);
 
         // let margins = MARGINS {

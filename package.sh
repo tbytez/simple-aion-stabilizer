@@ -31,11 +31,10 @@ cp "$HERE/assets/profile.txt" "$OUT/profile.txt"
 cp "$HERE/assets/uninstall.cmd" "$OUT/uninstall.cmd"
 cp "$HERE/assets/update-recovery.cmd" "$OUT/update-recovery.cmd"
 cp "$HERE/README.md" "$HERE/LICENSE" "$HERE/THIRD_PARTY_NOTICES.txt" "$OUT/"
-mkdir -p "$OUT/docs"
-cp "$HERE/docs/AXV-INVESTIGATION.md" "$HERE/docs/WINDOWS-VALIDATION.md" "$OUT/docs/"
 
 # Vendored windowing dependency license and downstream modification notice.
 mkdir -p "$OUT/licenses"
+cp "$HERE/vendor/eframe/LICENSE-MIT" "$OUT/licenses/eframe-LICENSE-MIT.txt"
 cp "$HERE/vendor/winit/LICENSE" "$OUT/licenses/winit-LICENSE.txt"
 cp "$HERE/assets/licenses/Flowseal-LICENSE.txt" "$OUT/licenses/Flowseal-LICENSE.txt"
 cp "$HERE/vendor/winit/PATCH-NOTES.md" "$OUT/licenses/winit-PATCH-NOTES.md"

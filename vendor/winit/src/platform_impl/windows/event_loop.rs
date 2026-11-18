@@ -2198,6 +2198,11 @@ unsafe fn public_window_callback_inner(
                     let min_size = min_size.to_physical(window_state.scale_factor);
                     let (width, height): (u32, u32) =
                         window_flags.adjust_size(window, min_size).into();
+                    // Evaluate on the current monitor, at the current DPI, without resizing
+                    // from paint or modifying the DPI transition rectangle.
+                    let [width, height] = super::size_constraints::cap_outer(
+                        [width, height], monitor::work_area_size(window),
+                    );
                     unsafe { (*mmi).ptMinTrackSize = POINT { x: width as i32, y: height as i32 } };
                 }
                 if let Some(max_size) = window_state.max_size {
@@ -2410,6 +2415,34 @@ unsafe fn public_window_callback_inner(
                     }
                 },
             );
+
+            // The OS-suggested DPI rectangle can round below the logical minimum
+            // on the return trip. Clamp this one existing resize, never issue a
+            // second resize or move the OS-selected origin.
+            let mut new_outer_rect = new_outer_rect;
+            if allow_resize {
+                let minimum = userdata.window_state_lock().min_size;
+                if let Some(minimum) = minimum {
+                    let minimum = window_flags.adjust_size(window, minimum.to_physical(new_scale_factor));
+                    let monitor = unsafe { MonitorFromRect(&suggested_rect, MONITOR_DEFAULTTONULL) };
+                    let work = monitor::get_monitor_info(monitor).ok().map(|info| {
+                        let r = info.monitorInfo.rcWork;
+                        [(r.right - r.left).max(0) as u32, (r.bottom - r.top).max(0) as u32]
+                    });
+                    let size = super::size_constraints::floor_dpi_size(
+                        [(new_outer_rect.right - new_outer_rect.left).max(0) as u32,
+                         (new_outer_rect.bottom - new_outer_rect.top).max(0) as u32],
+                        [minimum.width, minimum.height], work,
+                    );
+                    new_outer_rect.right = new_outer_rect.left + size[0] as i32;
+                    new_outer_rect.bottom = new_outer_rect.top + size[1] as i32;
+                }
+            }
+            // Refresh the small icon from the original RGBA at the new DPI.
+            let icon = userdata.window_state_lock().window_icon.clone();
+            if let Some(icon) = icon {
+                icon.inner.set_for_window(window, super::icon::IconType::Small);
+            }
 
             unsafe {
                 SetWindowPos(

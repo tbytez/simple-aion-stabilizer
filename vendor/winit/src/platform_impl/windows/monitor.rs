@@ -132,6 +132,13 @@ impl Window {
     }
 }
 
+pub(crate) fn work_area_size(hwnd: HWND) -> Option<[u32; 2]> {
+    let rect = get_monitor_info(current_monitor(hwnd).hmonitor()).ok()?.monitorInfo.rcWork;
+    let w = rect.right.checked_sub(rect.left)?;
+    let h = rect.bottom.checked_sub(rect.top)?;
+    (w > 0 && h > 0).then_some([w as u32, h as u32])
+}
+
 pub(crate) fn get_monitor_info(hmonitor: HMONITOR) -> Result<MONITORINFOEXW, io::Error> {
     let mut monitor_info: MONITORINFOEXW = unsafe { mem::zeroed() };
     monitor_info.monitorInfo.cbSize = mem::size_of::<MONITORINFOEXW>() as u32;

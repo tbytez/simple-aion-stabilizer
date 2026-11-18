@@ -18,9 +18,7 @@ These are AXV's sample destinations, not an official or exhaustive Aion
 server list. If your region uses other addresses, they must be identified
 and added to the target list. There is no universal strategy for every
 provider, region, or cause of connection failure. A running engine means
-the process is alive, not that login succeeded. See
-[the configuration investigation](docs/AXV-INVESTIGATION.md) for evidence
-and the differences from AXV's broader general-purpose launcher.
+the process is alive, not that login succeeded.
 
 Known copies of the old all-destination TCP/UDP profile and the web-only
 profile from v0.1.6/v0.1.7 migrate on first start with separate backups.
@@ -41,10 +39,14 @@ The app does not change Windows' global TCP timestamp setting.
 
 ## Use it
 
-Requires Windows 10 or newer with DirectX 12 support. The UI prefers an
-integrated GPU, then other compatible hardware, with Microsoft WARP as a
-software fallback. It does not use OpenGL. To force the software fallback
-for troubleshooting, set `AION_SOFTWARE_RENDERING=1` before starting the app.
+Requires Windows 10 or newer. The Windows UI draws on the CPU and presents
+through GDI, without creating a Direct3D device or DXGI swapchain. The default
+window is 420x700 logical points, with a 360x700 minimum capped to fit small
+monitor work areas. Title-bar icons refresh at the current monitor scale.
+
+Optional local diagnostics: run with `--cpu-metrics`. For presentation
+comparison, add `--cpu-gdi-direct` to use SetDIBitsToDevice instead of BitBlt.
+Diagnostics are off by default and never uploaded.
 
 Windows manages window resizing and monitor DPI changes. The interface
 wraps and scrolls in smaller windows and uses two columns in wide windows.

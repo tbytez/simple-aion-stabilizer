@@ -73,9 +73,9 @@ cargo run -p sign-manifest -- generate release-keys
 - Private key must never be committed (`git status` should never list
   `*.key`).
 
-## v0.1.8 validation status
+## Native validation
 
-See docs/PRE-RELEASE-AUDIT.md for the artifact audit and remaining
-native checks. Cross-compilation and host tests do not establish successful
-mixed-DPI dragging, live Aion login, or a native Windows update/relaunch.
-Retain these unverified runtime checks in the release notes.
+Cross-compilation and host tests do not verify native Windows behavior.
+The CPU/GDI renderer was exercised by the user on 1080p and 4K/225% screens.
+The final DPI minimum correction and title-bar icon refresh still need native
+Windows confirmation. Keep this limitation in the release notes.

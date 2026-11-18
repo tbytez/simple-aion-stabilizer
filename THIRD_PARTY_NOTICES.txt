@@ -14,6 +14,8 @@ license:
 
 * egui / eframe - https://github.com/emilk/egui
   MIT/Apache-2.0 license.
+  eframe 0.37 includes a downstream CPU/GDI painter and logical-minimum fix;
+  its MIT license is supplied in licenses/eframe-LICENSE-MIT.txt.
 
 * winit 0.30.13 - https://github.com/rust-windowing/winit
   Copyright the winit contributors, Apache-2.0 license.

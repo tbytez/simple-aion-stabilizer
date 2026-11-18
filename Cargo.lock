@@ -130,13 +130,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "aion-stabilizer"
-version = "0.1.11"
+name = "aion-cpu-renderer"
+version = "0.1.0"
 dependencies = [
+ "egui",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "aion-stabilizer"
+version = "0.1.12"
+dependencies = [
+ "aion-cpu-renderer",
  "ed25519-dalek",
  "eframe",
  "egui",
  "embed-resource",
+ "pollster",
  "serde_json",
  "sha2",
  "tray-icon",
@@ -904,10 +914,9 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c5642501a65ca657d05f00c643a5c14ff2346cb3818032bfe23d58e1f8e5f84"
 dependencies = [
  "ahash",
+ "aion-cpu-renderer",
  "bytemuck",
  "document-features",
  "egui",
