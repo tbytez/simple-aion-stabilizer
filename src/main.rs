@@ -88,7 +88,7 @@ fn main() {
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
-        .with_inner_size([420.0, 760.0])
+        .with_inner_size([420.0, 830.0])
         .with_min_inner_size([360.0, 700.0])
         // Do not force a logical minimum larger than a small high-DPI
         // display. The UI scrolls in both axes below its normal layout width.

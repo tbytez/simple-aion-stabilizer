@@ -1272,8 +1272,9 @@ mod tests {
     }
 
     /// Default window: the whole footer line and the update button are
-    /// reachable without scrolling in every ordinary state, keeping the
-    /// designed 16pt bottom margin. Only expanded banners may scroll.
+    /// reachable without scrolling in every ordinary state - including
+    /// the post-update rollback offer - keeping the designed 16pt bottom
+    /// margin. Only the update/error banners may push it into scroll.
     #[test]
     fn footer_and_update_button_fit_default_window_without_scrolling() {
         const FOOTER: &str = "Closing or minimizing keeps the app in the tray.";
@@ -1282,32 +1283,35 @@ mod tests {
             h.ctx.set_theme(theme);
             for &scale in &[1.0, 1.25, 1.5, 2.0, 2.625] {
                 for running in [false, true] {
-                    for (check_idx, check) in [
-                        CheckState::Idle,
-                        CheckState::Checking,
-                        CheckState::UpToDate,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        h.app.status.running = running;
-                        h.app.status.game_present = running;
-                        h.app.status.check = check;
-                        h.frame(vec2(420.0, 760.0), scale, vec![]);
-                        let footer = h
-                            .rect_of(FOOTER)
-                            .unwrap_or_else(|| panic!("footer must be visible without scrolling (theme {theme:?}, scale {scale}, running {running}, check state {check_idx})"));
-                        let button = h
-                            .rect_of("Check for updates")
-                            .expect("update button must be visible");
-                        assert!(
-                            footer.top() > button.bottom(),
-                            "footer below update button: {footer:?} {button:?}"
-                        );
-                        assert!(
-                            footer.bottom() <= 760.0 - 16.0,
-                            "footer keeps the 16pt bottom margin: {footer:?}"
-                        );
+                    for rollback in [false, true] {
+                        for (check_idx, check) in [
+                            CheckState::Idle,
+                            CheckState::Checking,
+                            CheckState::UpToDate,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            h.app.status.running = running;
+                            h.app.status.game_present = running;
+                            h.app.status.check = check;
+                            h.app.status.rollback_offer = rollback;
+                            h.frame(vec2(420.0, 830.0), scale, vec![]);
+                            let footer = h
+                                .rect_of(FOOTER)
+                                .unwrap_or_else(|| panic!("footer must be visible without scrolling (theme {theme:?}, scale {scale}, running {running}, rollback {rollback}, check state {check_idx})"));
+                            let button = h
+                                .rect_of("Check for updates")
+                                .expect("update button must be visible");
+                            assert!(
+                                footer.top() > button.bottom(),
+                                "footer below update button: {footer:?} {button:?}"
+                            );
+                            assert!(
+                                footer.bottom() <= 830.0 - 16.0,
+                                "footer keeps the 16pt bottom margin: {footer:?}"
+                            );
+                        }
                     }
                 }
             }
