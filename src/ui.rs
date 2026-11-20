@@ -135,6 +135,21 @@ impl App {
                             }
                         }
                     }
+                    // One-time offer on the first launch after a successful
+                    // update: put the parked previous exe back if this one
+                    // misbehaves. Dismissal deletes the parked copy.
+                    if self.status.rollback_offer {
+                        Self::hairline(ui);
+                        ui.label(format!("Updated to v{}.", env!("CARGO_PKG_VERSION")));
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Roll back").clicked() {
+                                self.ctrl.send(Cmd::Rollback);
+                            }
+                            if ui.small_button("Dismiss").clicked() {
+                                self.ctrl.send(Cmd::DismissRollback);
+                            }
+                        });
+                    }
                     Self::hairline(ui);
                     ui.add_space(2.0);
                     ui.allocate_ui_with_layout(
@@ -548,6 +563,17 @@ impl App {
                 self.ctrl.send(Cmd::SetAutostart(autostart));
             }
             Self::hairline(ui);
+            let mut auto_update = self.status.auto_update;
+            if Self::setting(
+                ui,
+                Icon::Update,
+                "Auto-update",
+                "Install new versions automatically",
+                &mut auto_update,
+            ) {
+                self.ctrl.send(Cmd::SetAutoUpdate(auto_update));
+            }
+            Self::hairline(ui);
             ui.add_space(2.0);
             let checking = matches!(self.status.check, CheckState::Checking);
             ui.allocate_ui_with_layout(
@@ -853,6 +879,9 @@ mod tests {
                             manifest_url: String::new(),
                             state: UpdateState::Failed("Network error ".repeat(40)),
                         });
+                        // The post-update rollback offer stacks with any
+                        // banner; state 3 exercises the worst pile-up.
+                        h.app.status.rollback_offer = state == 3;
                         h.frame(size, scale, vec![]);
                     }
                 }
@@ -1037,7 +1066,7 @@ mod tests {
         assert!(h.commands.try_recv().is_err());
     }
 
-    /// The three settings rows: painted icon bounds, painted switch
+    /// The settings rows: painted icon bounds, painted switch
     /// track and the full title+subtitle text block must all share one
     /// vertical center. Baseline painted the icon ~16pt high (on the
     /// title line) and the track ~4.5pt high.
@@ -1103,10 +1132,11 @@ mod tests {
 
     #[test]
     fn settings_icons_and_switches_center_on_text_blocks() {
-        const ROWS: [(&str, &str); 3] = [
+        const ROWS: [(&str, &str); 4] = [
             ("Auto-start with Aion", "Start and stop with the game"),
             ("Start engine on app open", "Turn on when this app opens"),
             ("Launch with Windows", "Start in the tray on login"),
+            ("Auto-update", "Install new versions automatically"),
         ];
         let mut h = Harness::new();
         for theme in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
@@ -1205,6 +1235,42 @@ mod tests {
         );
     }
 
+    /// The auto-update row toggles like every other setting and
+    /// persists through its controller command.
+    #[test]
+    fn auto_update_toggle_sends_command() {
+        let mut h = Harness::new();
+        let size = vec2(460.0, 700.0);
+        h.frame(size, 1.0, vec![]);
+        h.click("Auto-update", size, 1.0);
+        assert!(matches!(
+            h.commands.try_recv(),
+            Ok(Cmd::SetAutoUpdate(true))
+        ));
+        h.app.status.auto_update = true;
+        h.frame(size, 1.0, vec![]);
+        h.click("Auto-update", size, 1.0);
+        assert!(matches!(
+            h.commands.try_recv(),
+            Ok(Cmd::SetAutoUpdate(false))
+        ));
+    }
+
+    /// The post-update rollback offer sends its commands: Roll back
+    /// restores the previous exe via --finish-rollback, Dismiss deletes
+    /// the parked copy and clears the offer.
+    #[test]
+    fn rollback_offer_buttons_send_commands() {
+        let mut h = Harness::new();
+        h.app.status.rollback_offer = true;
+        let size = vec2(460.0, 900.0);
+        h.frame(size, 1.0, vec![]);
+        h.click("Roll back", size, 1.0);
+        assert!(matches!(h.commands.try_recv(), Ok(Cmd::Rollback)));
+        h.click("Dismiss", size, 1.0);
+        assert!(matches!(h.commands.try_recv(), Ok(Cmd::DismissRollback)));
+    }
+
     /// Default window: the whole footer line and the update button are
     /// reachable without scrolling in every ordinary state, keeping the
     /// designed 16pt bottom margin. Only expanded banners may scroll.
@@ -1227,7 +1293,7 @@ mod tests {
                         h.app.status.running = running;
                         h.app.status.game_present = running;
                         h.app.status.check = check;
-                        h.frame(vec2(420.0, 700.0), scale, vec![]);
+                        h.frame(vec2(420.0, 760.0), scale, vec![]);
                         let footer = h
                             .rect_of(FOOTER)
                             .unwrap_or_else(|| panic!("footer must be visible without scrolling (theme {theme:?}, scale {scale}, running {running}, check state {check_idx})"));
@@ -1239,7 +1305,7 @@ mod tests {
                             "footer below update button: {footer:?} {button:?}"
                         );
                         assert!(
-                            footer.bottom() <= 700.0 - 16.0,
+                            footer.bottom() <= 760.0 - 16.0,
                             "footer keeps the 16pt bottom margin: {footer:?}"
                         );
                     }

@@ -154,7 +154,7 @@ fn remove_retry(path: &Path, tries: u32) -> Result<(), String> {
 
 /// Rename with retries - the just-relinquished exe can stay locked
 /// briefly by a virus scanner.
-fn rename_retry(s: &Path, d: &Path, tries: u32) -> Result<(), String> {
+pub fn rename_retry(s: &Path, d: &Path, tries: u32) -> Result<(), String> {
     let mut last_err = String::new();
     for _ in 0..tries {
         match fs::rename(s, d) {

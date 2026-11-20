@@ -44,6 +44,12 @@ fn main() {
             std::process::exit(code);
         }
 
+        // headless rollback-helper mode: restores the previous exe
+        // parked as *.exe.old after the app exits - no mutex, no window
+        if args.iter().any(|a| a == "--finish-rollback") {
+            std::process::exit(update::finish_rollback());
+        }
+
         // Take ownership, not merely a new handle to the named object.
         // Keep the guard on the main thread until the event loop exits.
         let start_updated = args.iter().any(|a| a == "--updated");
@@ -57,7 +63,9 @@ fn main() {
             return;
         };
         _instance = instance;
-        update::cleanup_old_files();
+        // on the --updated relaunch keep the previous exe (*.exe.old) -
+        // it is the rollback source offered by the update banner
+        update::cleanup_old_files(start_updated);
         update::cleanup_stale_stages();
     }
 
@@ -68,12 +76,19 @@ fn main() {
     let config_text = std::fs::read_to_string(app_dir.join("config.ini")).unwrap_or_default();
     let cfg = Config::load(&config_text);
 
+    // Rollback is offered once, on the relaunch right after a successful
+    // update, while the previous exe is still parked as *.exe.old.
+    let rollback_offer = args.iter().any(|a| a == "--updated")
+        && app_dir
+            .join(format!("{}.old", manifest::APP_EXE))
+            .is_file();
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../icon.png"))
         .expect("embedded icon must decode");
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
-        .with_inner_size([420.0, 700.0])
+        .with_inner_size([420.0, 760.0])
         .with_min_inner_size([360.0, 700.0])
         // Do not force a logical minimum larger than a small high-DPI
         // display. The UI scrolls in both axes below its normal layout width.
@@ -112,6 +127,7 @@ fn main() {
             let ctrl = Controller::new(
                 app_dir,
                 cfg_for_app,
+                rollback_offer,
                 Arc::new(move || ctx.request_repaint()),
             );
 

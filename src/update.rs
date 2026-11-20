@@ -29,7 +29,7 @@
 use crate::core::{self, ReleaseInfo};
 use crate::manifest;
 use crate::sys;
-use crate::update_install::{apply_tree, copy_retry};
+use crate::update_install::{apply_tree, copy_retry, rename_retry};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -298,22 +298,111 @@ pub fn finish_update(stage_dir: &Path) -> i32 {
     0
 }
 
+/// Headless `--finish-rollback` entry point, run by the just-installed
+/// exe itself. Restores the previous version parked as
+/// `AionStabilizer.exe.old`: waits for the app to exit, moves the
+/// running (current) exe aside, puts the old binary back in place and
+/// relaunches it. Same fail-closed shape as `finish_update` - a failure
+/// leaves a runnable exe under the canonical name or reports the
+/// problem, never a missing executable.
+pub fn finish_rollback() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return 1,
+    };
+    let Some(app_dir) = exe.parent() else {
+        return 1;
+    };
+    let final_exe = app_dir.join(APP_EXE);
+    let old_exe = final_exe.with_extension("exe.old");
+    let aside = app_dir.join(format!("{APP_EXE}.new"));
+    let mut log = format!(
+        "Rollback helper v{}\nInstall: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        app_dir.display()
+    );
+    let result = (|| -> Result<(), String> {
+        // The app's exit releases the instance mutex; hold it through the
+        // relaunch so the restored version starts cleanly.
+        let mutex = sys::InstanceMutex::acquire(Duration::from_secs(120))
+            .ok_or_else(|| "timed out waiting for the app to exit".to_string())?;
+        if !old_exe.is_file() {
+            return Err("no previous version found to restore".to_string());
+        }
+        // This helper runs AS the installed exe; renaming its running
+        // image aside is allowed on Windows and frees the canonical name.
+        if final_exe.is_file() {
+            let _ = fs::remove_file(&aside);
+            rename_retry(&final_exe, &aside, 60)
+                .map_err(|e| format!("cannot move current version aside: {e}"))?;
+        }
+        if let Err(e) = rename_retry(&old_exe, &final_exe, 60) {
+            // Put the current version back - never leave no exe in place.
+            if aside.is_file() {
+                let _ = rename_retry(&aside, &final_exe, 60);
+            }
+            return Err(format!("cannot restore previous version: {e}"));
+        }
+        log.push_str("Previous version restored; restarting.\n");
+        // A saved auto_update=1 would reinstall the same release the
+        // user just rolled back from - turn it off for the old version.
+        let ini = app_dir.join("config.ini");
+        if let Ok(text) = fs::read_to_string(&ini) {
+            let _ = fs::write(&ini, core::config_set(&text, "auto_update", "0"));
+        }
+        Command::new(&final_exe)
+            .arg("--updated")
+            .current_dir(app_dir)
+            .spawn()
+            .map_err(|e| format!("cannot relaunch previous version: {e}"))?;
+        drop(mutex);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log.push_str(&format!("FAILED: {error}\n"));
+        let _ = fs::write(app_dir.join("update.log"), &log);
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let message = sys::wide(&format!("The rollback did not complete: {error}\n\nDetails are saved in update.log beside the app. If the app does not open, run update-recovery.cmd."));
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                sys::wide("Aion Stabilizer rollback failed").as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+        if final_exe.is_file() {
+            let _ = Command::new(&final_exe).current_dir(app_dir).spawn();
+        }
+        return 1;
+    }
+    log.push_str("SUCCESS\n");
+    let _ = fs::write(app_dir.join("update.log"), log);
+    0
+}
+
 /// Delete the leftover files the updater may leave next to the exe.
-/// Only removes our own known names, never user files.
-pub fn cleanup_old_files() {
+/// Only removes our own known names, never user files. When
+/// `preserve_old_exe` is set (the first `--updated` launch), the
+/// previous exe kept as `*.exe.old` is left in place as the rollback
+/// source; it is cleaned up on the next ordinary launch instead.
+pub fn cleanup_old_files(preserve_old_exe: bool) {
     let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
     else {
         return;
     };
-    let mut names = vec![format!("{APP_EXE}.old"), format!("{APP_EXE}.new")];
-    // the running exe may have been renamed before the update
-    if let Some(stem) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-    {
-        names.push(format!("{stem}.exe.old"));
+    let mut names = vec![format!("{APP_EXE}.new")];
+    if !preserve_old_exe {
+        names.push(format!("{APP_EXE}.old"));
+        // the running exe may have been renamed before the update
+        if let Some(stem) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        {
+            names.push(format!("{stem}.exe.old"));
+        }
     }
     for n in names {
         let _ = fs::remove_file(dir.join(n));

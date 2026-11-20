@@ -17,8 +17,11 @@ pub enum Cmd {
     SetWatch(bool),
     SetStartupEngine(bool),
     SetAutostart(bool),
+    SetAutoUpdate(bool),
     CheckUpdate,
     ApplyUpdate,
+    Rollback,
+    DismissRollback,
     Shutdown,
 }
 
@@ -70,9 +73,11 @@ pub struct Status {
     pub watch: bool,
     pub startup_engine: bool,
     pub autostart: bool,
+    pub auto_update: bool,
     pub error: Option<String>,
     pub update: Option<UpdateInfo>,
     pub check: CheckState,
+    pub rollback_offer: bool,
 }
 
 #[derive(Clone)]
@@ -86,6 +91,7 @@ pub struct Config {
     pub watch_game: bool,
     pub watch_names: Vec<String>,
     pub update_check: bool,
+    pub auto_update: bool,
 }
 
 impl Config {
@@ -100,6 +106,7 @@ impl Config {
                 core::DEFAULT_WATCH_PROCESSES,
             ),
             update_check: core::config_get_bool(config_text, "update_check", true),
+            auto_update: core::config_get_bool(config_text, "auto_update", false),
         }
     }
 }
@@ -222,6 +229,43 @@ fn apply_update_now(
 ) {
 }
 
+/// Stop the engine and hand the restore to a headless copy of this exe
+/// (`--finish-rollback`), then exit so the file swap can proceed. The
+/// previous version parked as `*.exe.old` goes back into place.
+#[cfg(windows)]
+fn rollback_now(engine: &mut Engine, status: &Arc<Mutex<Status>>, wake: &Arc<dyn Fn() + Send + Sync>) {
+    use std::process::Command;
+    engine.stop();
+    if let Ok(mut s) = status.lock() {
+        s.running = false;
+        s.auto_started = false;
+        s.rollback_offer = false;
+    }
+    wake();
+    let spawned = std::env::current_exe()
+        .map_err(|e| e.to_string())
+        .and_then(|exe| {
+            Command::new(exe)
+                .arg("--finish-rollback")
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        });
+    match spawned {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            if let Ok(mut s) = status.lock() {
+                s.error = Some(format!("cannot start rollback: {e}"));
+            }
+            wake();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn rollback_now(_engine: &mut Engine, _status: &Arc<Mutex<Status>>, _wake: &Arc<dyn Fn() + Send + Sync>) {
+}
+
 /// Worker: private stage -> download -> verify manifest -> extract ->
 /// verify files -> swap -> relaunch. Exits the process on success; on
 /// failure reports UpdateState::Failed (retry keeps the release info).
@@ -272,12 +316,21 @@ fn apply_update(
 
 impl Controller {
     /// Spawn the controller thread. `wake` is called after status changes.
-    pub fn new(app_dir: PathBuf, cfg: Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+    /// `rollback_offer` marks the first launch after a successful update,
+    /// while the previous exe is still parked as `*.exe.old`.
+    pub fn new(
+        app_dir: PathBuf,
+        cfg: Config,
+        rollback_offer: bool,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         let (tx, rx) = channel::<Cmd>();
         let status = Arc::new(Mutex::new(Status {
             watch: cfg.watch_game,
             startup_engine: cfg.autostart_engine,
             autostart: autostart_enabled(),
+            auto_update: cfg.auto_update,
+            rollback_offer,
             ..Status::default()
         }));
         let st = status.clone();
@@ -314,6 +367,26 @@ fn update_in_progress(status: &Mutex<Status>) -> bool {
         .lock()
         .map(|s| s.update.as_ref().is_some_and(|u| u.state.busy()))
         .unwrap_or(true)
+}
+
+/// True when auto-update should start applying: the feature is on, a
+/// release is waiting in Available state and the engine is off so the
+/// install (which stops the engine and restarts the app) never
+/// interrupts a game session. Anything else - checking, downloading,
+/// failed, feature off - returns false.
+fn auto_update_ready(status: &Mutex<Status>, engine_running: bool) -> bool {
+    if engine_running {
+        return false;
+    }
+    status
+        .lock()
+        .map(|s| {
+            s.auto_update
+                && s.update
+                    .as_ref()
+                    .is_some_and(|u| matches!(u.state, UpdateState::Available))
+        })
+        .unwrap_or(false)
 }
 
 const AUTO_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
@@ -378,6 +451,13 @@ fn run(
         // while an update downloads/applies, block engine (re)starts - it
         // would re-lock the winws/WinDivert files the swap needs to write
         let updating = update_in_progress(&status);
+
+        // auto-update: hand a waiting release to the verified install
+        // path once the engine is off. The manual Install button
+        // (Cmd::ApplyUpdate) still applies immediately regardless.
+        if !updating && auto_update_ready(&status, engine.is_running()) {
+            apply_update_now(app_dir.clone(), &mut engine, status.clone(), wake.clone());
+        }
 
         match rx.recv_timeout(Duration::from_millis(400)) {
             Ok(Cmd::Shutdown) => {
@@ -449,11 +529,37 @@ fn run(
                 autostart_set(on);
                 set_status!(autostart, autostart_enabled());
             }
+            Ok(Cmd::SetAutoUpdate(on)) => {
+                set_status!(auto_update, on);
+                save_config(&app_dir, "auto_update", if on { "1" } else { "0" });
+                // enabling applies now, not only at next launch
+                if on {
+                    check_for_update(status.clone(), wake.clone());
+                }
+            }
             Ok(Cmd::CheckUpdate) => {
                 check_for_update(status.clone(), wake.clone());
             }
             Ok(Cmd::ApplyUpdate) => {
                 apply_update_now(app_dir.clone(), &mut engine, status.clone(), wake.clone());
+            }
+            Ok(Cmd::Rollback) => {
+                rollback_now(&mut engine, &status, &wake);
+            }
+            Ok(Cmd::DismissRollback) => {
+                // One-time offer: delete the parked previous exe so the
+                // banner is gone for good (startup cleanup would anyway).
+                let mut names = vec![format!("{}.old", crate::manifest::APP_EXE)];
+                if let Some(stem) = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                {
+                    names.push(format!("{stem}.exe.old"));
+                }
+                for n in names {
+                    let _ = std::fs::remove_file(app_dir.join(n));
+                }
+                set_status!(rollback_offer, false);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -553,5 +659,35 @@ mod update_watcher_tests {
         status.lock().unwrap().update.as_mut().unwrap().state =
             UpdateState::Failed("download failed".into());
         assert!(!update_in_progress(&status));
+    }
+
+    #[test]
+    fn auto_update_waits_for_available_release_and_idle_engine() {
+        let status = Mutex::new(Status::default());
+        // no release found yet
+        assert!(!auto_update_ready(&status, false));
+        status.lock().unwrap().update = Some(UpdateInfo {
+            version: "9.9.9".into(),
+            zip_url: String::new(),
+            manifest_url: String::new(),
+            state: UpdateState::Available,
+        });
+        // feature off / engine busy -> hold
+        assert!(!auto_update_ready(&status, false));
+        assert!(!auto_update_ready(&status, true));
+        status.lock().unwrap().auto_update = true;
+        assert!(!auto_update_ready(&status, true));
+        // feature on, release waiting, engine off -> apply
+        assert!(auto_update_ready(&status, false));
+        // once applying or after a failure the gate stays closed
+        for state in [
+            UpdateState::Downloading(0),
+            UpdateState::Verifying,
+            UpdateState::Installing,
+            UpdateState::Failed("download failed".into()),
+        ] {
+            status.lock().unwrap().update.as_mut().unwrap().state = state;
+            assert!(!auto_update_ready(&status, false));
+        }
     }
 }
