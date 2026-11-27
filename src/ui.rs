@@ -1,6 +1,7 @@
 //! Layout-driven UI. All dimensions are logical points; eframe owns the
 //! monitor scale, font atlas resolution, hit testing and physical surface.
 use crate::controller::{CheckState, Cmd, Controller, Status, UpdateState};
+use crate::diagnostics::DisconnectReport;
 use crate::draw::{self, Icon};
 use crate::theme;
 use egui::{vec2, Align2, Color32, FontFamily, FontId, Pos2, RichText, Sense, Stroke};
@@ -10,6 +11,10 @@ pub struct App {
     ctrl: Controller,
     status: Status,
     dismissed_error: Option<String>,
+    dismissed_autostart_error: Option<String>,
+    disconnect_report: Option<DisconnectReport>,
+    #[cfg(windows)]
+    connectivity: crate::diagnostics::Monitor,
     #[cfg(not(windows))]
     shot_requested: bool,
     #[cfg(windows)]
@@ -22,6 +27,12 @@ impl App {
             ctrl,
             status: Status::default(),
             dismissed_error: None,
+            dismissed_autostart_error: None,
+            disconnect_report: None,
+            #[cfg(all(windows, not(test)))]
+            connectivity: crate::diagnostics::Monitor::start(),
+            #[cfg(all(windows, test))]
+            connectivity: crate::diagnostics::Monitor::default(),
             #[cfg(not(windows))]
             shot_requested: false,
             #[cfg(windows)]
@@ -91,23 +102,42 @@ impl App {
                         ui.add_space(2.0);
                         self.settings(ui);
                     }
-                    if let Some(error) = self.status.error.clone() {
-                        if self.dismissed_error.as_ref() != Some(&error) {
-                            egui::Frame::new()
-                                .fill(pal.danger_bg)
-                                .inner_margin(12)
-                                .corner_radius(8)
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.colored_label(pal.danger, &error);
+                    let error = [
+                        (&self.status.error, &self.dismissed_error, true),
+                        (
+                            &self.status.autostart_error,
+                            &self.dismissed_autostart_error,
+                            false,
+                        ),
+                    ]
+                    .into_iter()
+                    .find_map(|(error, dismissed, engine_details)| {
+                        error
+                            .as_ref()
+                            .filter(|error| Some(*error) != dismissed.as_ref())
+                            .map(|error| (error.clone(), engine_details))
+                    });
+                    if let Some((error, engine_details)) = error {
+                        egui::Frame::new()
+                            .fill(pal.danger_bg)
+                            .inner_margin(12)
+                            .corner_radius(8)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.colored_label(pal.danger, &error);
+                                if engine_details {
                                     ui.label(
                                         "Engine details are saved in engine.log beside the app.",
                                     );
-                                    if ui.button("Dismiss").clicked() {
+                                }
+                                if ui.button("Dismiss").clicked() {
+                                    if engine_details {
                                         self.dismissed_error = Some(error);
+                                    } else {
+                                        self.dismissed_autostart_error = Some(error);
                                     }
-                                });
-                        }
+                                }
+                            });
                     }
                     if let Some(update) = self.status.update.clone() {
                         Self::hairline(ui);
@@ -420,10 +450,88 @@ impl App {
                 );
             });
             ui.add_space(2.0);
-            ui.collapsing(RichText::new("Connection help").size(12.0).color(pal.dim), |ui| {
-                ui.label("Start the engine before opening Aion, or enable auto-start. Game detection starts once the game opens. If login fails, stop the engine and retry — a running engine does not confirm connectivity.");
-            });
+            self.disconnect_report(ui);
         });
+    }
+
+    fn disconnect_report(&mut self, ui: &mut egui::Ui) {
+        let pal = theme::palette(ui.ctx());
+        ui.collapsing(
+            RichText::new("Why did I disconnect?").size(12.0).color(pal.dim),
+            |ui| {
+                ui.spacing_mut().item_spacing.y = 5.0;
+                if let Some(report) = &self.disconnect_report {
+                    let marker = if report.has_warning {
+                        pal.danger
+                    } else {
+                        pal.dim
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        ui.label(RichText::new("•").color(marker));
+                        ui.label(RichText::new(report.finding).strong());
+                    });
+                    ui.label(RichText::new(report.explanation).size(12.0).color(pal.dim));
+                    if let Some(marked_at) = &report.marked_at {
+                        ui.label(
+                            RichText::new(format!("Marked at {marked_at}"))
+                                .size(11.0)
+                                .color(pal.dim),
+                        );
+                    }
+                    for event in &report.events {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 7.0;
+                            ui.label(
+                                RichText::new(&event.time)
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(pal.dim),
+                            );
+                            ui.label(RichText::new(event.description).size(12.0));
+                        });
+                    }
+                    ui.label(RichText::new(report.next_step).size(12.0).color(pal.dim));
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "Mark a disconnect to see what the app observed around that time.",
+                        )
+                        .size(12.0)
+                        .color(pal.dim),
+                    );
+                }
+                ui.horizontal_wrapped(|ui| {
+                    let mark_label = if self.disconnect_report.is_some() {
+                        "Mark another disconnect"
+                    } else {
+                        "Mark disconnect"
+                    };
+                    if ui.small_button(mark_label).clicked() {
+                        let status = self.ctrl.status();
+                        #[cfg(windows)]
+                        let connectivity = self.connectivity.snapshot();
+                        #[cfg(not(windows))]
+                        let connectivity = Default::default();
+                        self.disconnect_report = Some(DisconnectReport::capture(
+                            std::time::Instant::now(),
+                            &status,
+                            connectivity,
+                        ));
+                    }
+                    if let Some(report) = &self.disconnect_report {
+                        if ui.link("Copy report").clicked() {
+                            ui.ctx().copy_text(report.copy_text());
+                        }
+                    }
+                });
+                ui.label(
+                    RichText::new("Start the engine before opening Aion, or enable auto-start. Game detection starts once the game opens. If login fails, stop the engine and retry — a running engine does not confirm connectivity.")
+                        .size(12.0)
+                        .color(pal.dim),
+                );
+            },
+        );
     }
 
     /// Move a horizontally positioned rect so it centers on the finalized
@@ -560,6 +668,7 @@ impl App {
                 "Start in the tray on login",
                 &mut autostart,
             ) {
+                self.dismissed_autostart_error = None;
                 self.ctrl.send(Cmd::SetAutostart(autostart));
             }
             Self::hairline(ui);
@@ -887,6 +996,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn disconnect_report_can_be_marked_without_sending_engine_commands() {
+        let mut h = Harness::new();
+        let size = vec2(360.0, 700.0);
+        let scale = 2.625;
+        h.frame(size, scale, vec![]);
+        assert!(h.find("Mark disconnect").is_none());
+        h.click("Why did I disconnect?", size, scale);
+        for _ in 0..8 {
+            h.frame(size, scale, vec![]);
+        }
+        h.click("Mark disconnect", size, scale);
+        for _ in 0..8 {
+            h.frame(size, scale, vec![]);
+        }
+        assert!(h.find("Cause unclear").is_some());
+        assert!(h.find("Copy report").is_some());
+        assert!(h.commands.try_recv().is_err());
     }
 
     #[test]

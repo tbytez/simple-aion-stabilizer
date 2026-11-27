@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod controller;
+mod diagnostics;
 mod core;
 mod draw;
 mod engine;

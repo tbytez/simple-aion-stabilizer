@@ -17,7 +17,6 @@ use windows_sys::Win32::Security::Cryptography::{
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::JobObjects::*;
-use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Services::*;
 use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
 use windows_sys::Win32::System::Threading::*;
@@ -391,83 +390,7 @@ pub fn apply_window_style() {
     }
 }
 
-// ---------------- registry autostart ----------------
-
-fn run_key_wide() -> Vec<u16> {
-    wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
-}
-
-fn value_name_wide() -> Vec<u16> {
-    wide("AionStabilizer")
-}
-
-fn open_run_key() -> HKEY {
-    unsafe {
-        let mut key: HKEY = ptr::null_mut();
-        let name = run_key_wide();
-        if RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            name.as_ptr(),
-            0,
-            KEY_READ | KEY_WRITE,
-            &mut key,
-        ) == 0
-        {
-            key
-        } else {
-            ptr::null_mut()
-        }
-    }
-}
-
-pub fn autostart_enabled() -> bool {
-    unsafe {
-        let key = open_run_key();
-        if key.is_null() {
-            return false;
-        }
-        let mut ty = 0u32;
-        let mut size = 0u32;
-        let name = value_name_wide();
-        let ok = RegQueryValueExW(
-            key,
-            name.as_ptr(),
-            ptr::null(),
-            &mut ty,
-            ptr::null_mut(),
-            &mut size,
-        ) == 0;
-        RegCloseKey(key);
-        ok
-    }
-}
-
-pub fn autostart_set(enable: bool) {
-    unsafe {
-        let key = open_run_key();
-        if key.is_null() {
-            return;
-        }
-        let name = value_name_wide();
-        if enable {
-            if let Ok(exe) = std::env::current_exe() {
-                let cmd = format!("\"{}\" --tray", exe.display());
-                let w = wide(&cmd);
-                RegSetValueExW(
-                    key,
-                    name.as_ptr(),
-                    0,
-                    REG_SZ,
-                    w.as_ptr() as *const u8,
-                    (w.len() * 2) as u32,
-                );
-            }
-        } else {
-            RegDeleteValueW(key, name.as_ptr());
-        }
-        RegCloseKey(key);
-    }
-}
+pub(crate) mod autostart;
 
 // ---------------- job object: kill winws if we die ----------------
 

@@ -70,9 +70,11 @@ pub struct Status {
     pub running: bool,
     pub auto_started: bool,
     pub game_present: bool,
+    pub last_unexpected_engine_exit: Option<Instant>,
     pub watch: bool,
     pub startup_engine: bool,
     pub autostart: bool,
+    pub autostart_error: Option<String>,
     pub auto_update: bool,
     pub error: Option<String>,
     pub update: Option<UpdateInfo>,
@@ -111,22 +113,33 @@ impl Config {
     }
 }
 
-fn autostart_enabled() -> bool {
+fn sync_autostart(status: &Mutex<Status>, requested: Option<bool>) {
     #[cfg(windows)]
     {
-        crate::sys::autostart_enabled()
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var("AION_FAKE_AUTOSTART").is_ok()
-    }
-}
+        use crate::sys::autostart;
 
-fn autostart_set(on: bool) {
-    #[cfg(windows)]
-    crate::sys::autostart_set(on);
+        let result = match requested {
+            Some(on) => autostart::set(on),
+            None => autostart::refresh(),
+        };
+        let (enabled, error) = match result {
+            Ok(enabled) => (Some(enabled), None),
+            Err(error) => (
+                autostart::enabled().ok(),
+                Some(format!("Could not configure Launch with Windows: {error}")),
+            ),
+        };
+        if let Ok(mut status) = status.lock() {
+            if let Some(enabled) = enabled {
+                status.autostart = enabled;
+            }
+            status.autostart_error = error;
+        }
+    }
     #[cfg(not(windows))]
-    let _ = on;
+    {
+        let _ = (status, requested);
+    }
 }
 
 fn save_config(app_dir: &Path, key: &str, value: &str) {
@@ -328,7 +341,8 @@ impl Controller {
         let status = Arc::new(Mutex::new(Status {
             watch: cfg.watch_game,
             startup_engine: cfg.autostart_engine,
-            autostart: autostart_enabled(),
+            #[cfg(not(windows))]
+            autostart: std::env::var("AION_FAKE_AUTOSTART").is_ok(),
             auto_update: cfg.auto_update,
             rollback_offer,
             ..Status::default()
@@ -406,11 +420,8 @@ fn run(
     let mut last_auto_fail: Option<Instant> = None;
     let mut last_poll = Instant::now();
 
-    // refresh the autostart entry with the current exe path - heals it
-    // after an update renamed or replaced the binary
-    if autostart_enabled() {
-        autostart_set(true);
-    }
+    sync_autostart(&status, None);
+    (wake)();
 
     // one release check at startup (config.ini: update_check=0 disables)
     if cfg.update_check {
@@ -526,8 +537,8 @@ fn run(
                 save_config(&app_dir, "autostart_engine", if on { "1" } else { "0" });
             }
             Ok(Cmd::SetAutostart(on)) => {
-                autostart_set(on);
-                set_status!(autostart, autostart_enabled());
+                sync_autostart(&status, Some(on));
+                (wake)();
             }
             Ok(Cmd::SetAutoUpdate(on)) => {
                 set_status!(auto_update, on);
@@ -571,6 +582,9 @@ fn run(
         // engine died on its own?
         if !engine.is_running() {
             if let Some(exit) = engine.last_exit.take() {
+                if let Ok(mut s) = status.lock() {
+                    s.last_unexpected_engine_exit = Some(Instant::now());
+                }
                 set_status!(running, false);
                 set_status!(auto_started, false);
                 set_status!(error, Some(format!("Engine stopped unexpectedly ({exit})")));
