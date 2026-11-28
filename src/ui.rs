@@ -5,7 +5,7 @@ use crate::diagnostics::DisconnectReport;
 use crate::draw::{self, Icon};
 use crate::theme;
 use egui::{vec2, Align2, Color32, FontFamily, FontId, Pos2, RichText, Sense, Stroke};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct App {
     ctrl: Controller,
@@ -13,6 +13,8 @@ pub struct App {
     dismissed_error: Option<String>,
     dismissed_autostart_error: Option<String>,
     disconnect_report: Option<DisconnectReport>,
+    disconnect_seen: Option<Instant>,
+    game_last_seen: Option<Instant>,
     #[cfg(windows)]
     connectivity: crate::diagnostics::Monitor,
     #[cfg(not(windows))]
@@ -29,6 +31,8 @@ impl App {
             dismissed_error: None,
             dismissed_autostart_error: None,
             disconnect_report: None,
+            disconnect_seen: None,
+            game_last_seen: None,
             #[cfg(all(windows, not(test)))]
             connectivity: crate::diagnostics::Monitor::start(),
             #[cfg(all(windows, test))]
@@ -41,6 +45,7 @@ impl App {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
+        self.capture_disconnect_signal();
         let pal = theme::palette(ui.ctx());
         ui.painter().rect_filled(ui.max_rect(), 0, pal.bg);
         ui.spacing_mut().item_spacing = vec2(12.0, 10.0);
@@ -454,6 +459,51 @@ impl App {
         });
     }
 
+    /// Auto-capture a disconnect report when observations fire while the
+    /// game is (or just was) running: an unexpected engine exit, or a
+    /// connected -> disconnected internet transition. Each new signal
+    /// refreshes the report at the signal's own instant, so delayed or
+    /// hidden-window frames still reconstruct the right timeline.
+    fn capture_disconnect_signal(&mut self) {
+        /// A signal counts as a game disconnect when Aion was seen within
+        /// this window - covers a game crash arriving in the same poll.
+        const GAME_RECENT: Duration = Duration::from_secs(90);
+
+        #[cfg(windows)]
+        let connectivity = self.connectivity.snapshot();
+        #[cfg(not(windows))]
+        let connectivity = crate::diagnostics::Connectivity::default();
+
+        let now = Instant::now();
+        if self.status.game_present {
+            self.game_last_seen = Some(now);
+        }
+        let game_recent = self.status.game_present
+            || self
+                .game_last_seen
+                .is_some_and(|t| now.duration_since(t) <= GAME_RECENT);
+
+        let signal = [
+            self.status.last_unexpected_engine_exit,
+            connectivity.internet_loss_edge(),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        if let Some(at) = signal {
+            if self.disconnect_seen.is_none_or(|seen| at > seen) {
+                self.disconnect_seen = Some(at);
+                if game_recent {
+                    self.disconnect_report = Some(DisconnectReport::capture(
+                        at,
+                        &self.status,
+                        connectivity,
+                    ));
+                }
+            }
+        }
+    }
+
     fn disconnect_report(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
         ui.collapsing(
@@ -472,9 +522,9 @@ impl App {
                         ui.label(RichText::new(report.finding).strong());
                     });
                     ui.label(RichText::new(report.explanation).size(12.0).color(pal.dim));
-                    if let Some(marked_at) = &report.marked_at {
+                    if let Some(detected_at) = &report.detected_at {
                         ui.label(
-                            RichText::new(format!("Marked at {marked_at}"))
+                            RichText::new(format!("Detected at {detected_at}"))
                                 .size(11.0)
                                 .color(pal.dim),
                         );
@@ -492,39 +542,18 @@ impl App {
                         });
                     }
                     ui.label(RichText::new(report.next_step).size(12.0).color(pal.dim));
+                    if ui.link("Copy report").clicked() {
+                        ui.ctx().copy_text(report.copy_text());
+                    }
                 } else {
                     ui.label(
                         RichText::new(
-                            "Mark a disconnect to see what the app observed around that time.",
+                            "When the app detects a disconnect it records what it observed here.",
                         )
                         .size(12.0)
                         .color(pal.dim),
                     );
                 }
-                ui.horizontal_wrapped(|ui| {
-                    let mark_label = if self.disconnect_report.is_some() {
-                        "Mark another disconnect"
-                    } else {
-                        "Mark disconnect"
-                    };
-                    if ui.small_button(mark_label).clicked() {
-                        let status = self.ctrl.status();
-                        #[cfg(windows)]
-                        let connectivity = self.connectivity.snapshot();
-                        #[cfg(not(windows))]
-                        let connectivity = Default::default();
-                        self.disconnect_report = Some(DisconnectReport::capture(
-                            std::time::Instant::now(),
-                            &status,
-                            connectivity,
-                        ));
-                    }
-                    if let Some(report) = &self.disconnect_report {
-                        if ui.link("Copy report").clicked() {
-                            ui.ctx().copy_text(report.copy_text());
-                        }
-                    }
-                });
                 ui.label(
                     RichText::new("Start the engine before opening Aion, or enable auto-start. Game detection starts once the game opens. If login fails, stop the engine and retry — a running engine does not confirm connectivity.")
                         .size(12.0)
@@ -999,23 +1028,43 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_report_can_be_marked_without_sending_engine_commands() {
+    fn disconnect_report_auto_captures_engine_exit_with_game_up() {
         let mut h = Harness::new();
         let size = vec2(360.0, 700.0);
         let scale = 2.625;
+        h.app.status.watch = true;
+        h.app.status.game_present = true;
+        h.app.status.last_unexpected_engine_exit =
+            Some(Instant::now() - Duration::from_secs(2));
         h.frame(size, scale, vec![]);
         assert!(h.find("Mark disconnect").is_none());
         h.click("Why did I disconnect?", size, scale);
         for _ in 0..8 {
             h.frame(size, scale, vec![]);
         }
-        h.click("Mark disconnect", size, scale);
+        assert!(h.find("The stabilizer stopped").is_some());
+        assert!(h.find("Disconnect detected · Aion detected").is_some());
+        assert!(h.find("Copy report").is_some());
+        assert!(h.commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnect_report_stays_empty_without_a_recent_game_session() {
+        let mut h = Harness::new();
+        let size = vec2(360.0, 700.0);
+        let scale = 2.625;
+        h.app.status.watch = true;
+        h.app.status.last_unexpected_engine_exit = Some(Instant::now());
+        h.frame(size, scale, vec![]);
+        h.click("Why did I disconnect?", size, scale);
         for _ in 0..8 {
             h.frame(size, scale, vec![]);
         }
-        assert!(h.find("Cause unclear").is_some());
-        assert!(h.find("Copy report").is_some());
-        assert!(h.commands.try_recv().is_err());
+        assert!(h.find("The stabilizer stopped").is_none());
+        assert!(h.find("Copy report").is_none());
+        assert!(h
+            .find("When the app detects a disconnect it records what it observed here.")
+            .is_some());
     }
 
     #[test]

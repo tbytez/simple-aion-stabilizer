@@ -66,6 +66,11 @@ pub fn install_fonts(ctx: &egui::Context) {
         .entry(FontFamily::Proportional)
         .or_default()
         .insert(0, "inter".to_owned());
+    // `default_fonts` is off, so no bundled monospace face exists; an empty
+    // family renders every glyph as tofu. Reuse Inter for monospace text.
+    fonts
+        .families
+        .insert(FontFamily::Monospace, vec!["inter".to_owned()]);
     fonts
         .families
         .insert(FontFamily::Name("md".into()), vec!["inter-md".to_owned()]);

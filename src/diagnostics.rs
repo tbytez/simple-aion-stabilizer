@@ -5,20 +5,33 @@ use std::time::{Duration, Instant};
 
 const RECENT: Duration = Duration::from_secs(30);
 const FRESH: Duration = Duration::from_secs(5);
+/// The connectivity poll interval, plus slack: an observation tick just
+/// after `at` still describes the connection state at `at`.
+const POLL_LAG: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Default)]
 pub struct Connectivity {
     latest: Option<(Instant, bool)>,
     last_without_internet: Option<Instant>,
+    internet_loss_edge: Option<Instant>,
 }
 
 impl Connectivity {
     #[cfg(any(windows, test))]
     fn observe(&mut self, at: Instant, internet: Option<bool>) {
+        if internet == Some(false) && self.latest.map(|(_, connected)| connected) != Some(false) {
+            self.internet_loss_edge = Some(at);
+        }
         self.latest = internet.map(|connected| (at, connected));
         if internet == Some(false) {
             self.last_without_internet = Some(at);
         }
+    }
+
+    /// Time of the latest connected -> disconnected transition, or `None`
+    /// when none was observed.
+    pub fn internet_loss_edge(&self) -> Option<Instant> {
+        self.internet_loss_edge
     }
 }
 
@@ -33,7 +46,7 @@ pub struct DisconnectReport {
     pub next_step: &'static str,
     pub events: Vec<Event>,
     pub has_warning: bool,
-    pub marked_at: Option<String>,
+    pub detected_at: Option<String>,
 }
 
 impl DisconnectReport {
@@ -47,11 +60,23 @@ impl DisconnectReport {
             .filter(|&time| recent(time));
         let internet_loss = connectivity
             .last_without_internet
-            .filter(|&time| recent(time));
-        let internet_now = connectivity.latest.filter(|&(time, _)| {
-            at.checked_duration_since(time)
-                .is_some_and(|age| age <= FRESH)
-        });
+            .filter(|&time| {
+                recent(time)
+                    || time
+                        .checked_duration_since(at)
+                        .is_some_and(|lag| lag <= POLL_LAG)
+            })
+            .map(|time| time.min(at));
+        let internet_now = connectivity
+            .latest
+            .filter(|&(time, _)| {
+                at.checked_duration_since(time)
+                    .is_some_and(|age| age <= FRESH)
+                    || time
+                        .checked_duration_since(at)
+                        .is_some_and(|lag| lag <= POLL_LAG)
+            })
+            .map(|(time, connected)| (time.min(at), connected));
 
         let (finding, explanation, next_step) = match (engine_exit, internet_loss) {
             (Some(_), None) => (
@@ -97,11 +122,11 @@ impl DisconnectReport {
         observations.push((
             at,
             if !status.watch {
-                "Disconnect marked · Aion detection off"
+                "Disconnect detected · Aion detection off"
             } else if status.game_present {
-                "Disconnect marked · Aion detected"
+                "Disconnect detected · Aion detected"
             } else {
-                "Disconnect marked · Aion not detected"
+                "Disconnect detected · Aion not detected"
             },
         ));
         observations.sort_by_key(|&(time, _)| time);
@@ -126,7 +151,7 @@ impl DisconnectReport {
             next_step,
             events,
             has_warning: engine_exit.is_some() || internet_loss.is_some(),
-            marked_at: marked_at(),
+            detected_at: detected_at(),
         }
     }
 
@@ -137,8 +162,8 @@ impl DisconnectReport {
             self.finding,
             self.explanation,
         );
-        if let Some(marked_at) = &self.marked_at {
-            let _ = writeln!(text, "Marked at {marked_at}");
+        if let Some(detected_at) = &self.detected_at {
+            let _ = writeln!(text, "Detected at {detected_at}");
         }
         for event in &self.events {
             let _ = writeln!(text, "{}  {}", event.time, event.description);
@@ -148,7 +173,7 @@ impl DisconnectReport {
     }
 }
 
-fn marked_at() -> Option<String> {
+fn detected_at() -> Option<String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::SYSTEMTIME;
@@ -259,6 +284,53 @@ mod tests {
             report.events[1].description,
             "Windows reported internet access"
         );
+    }
+
+    #[test]
+    fn capture_counts_poll_ticks_just_after_the_signal() {
+        let marked = Instant::now();
+        let status = Status {
+            last_unexpected_engine_exit: Some(marked),
+            watch: true,
+            game_present: true,
+            ..Status::default()
+        };
+        // connectivity observed fine, but its tick post-dates the signal
+        let mut connectivity = Connectivity::default();
+        connectivity.observe(marked + Duration::from_secs(2), Some(true));
+        let report = DisconnectReport::capture(marked, &status, connectivity);
+        assert_eq!(report.finding, "The stabilizer stopped");
+        assert!(report
+            .copy_text()
+            .contains("Windows reported internet access"));
+        // an ongoing outage whose tick post-dates `at` still counts
+        let mut down = Connectivity::default();
+        down.observe(marked - Duration::from_secs(1), Some(false));
+        down.observe(marked + Duration::from_secs(2), Some(false));
+        let report = DisconnectReport::capture(marked, &status, down);
+        assert_eq!(report.finding, "Engine and internet problems observed");
+        assert!(report
+            .copy_text()
+            .contains("Windows reported no internet access"));
+    }
+
+    #[test]
+    fn internet_loss_edge_marks_only_the_transition() {
+        let mut connectivity = Connectivity::default();
+        let start = Instant::now();
+        connectivity.observe(start, Some(true));
+        assert_eq!(connectivity.internet_loss_edge(), None);
+        let drop = start + Duration::from_secs(1);
+        connectivity.observe(drop, Some(false));
+        assert_eq!(connectivity.internet_loss_edge(), Some(drop));
+        // a continued outage does not re-arm the edge
+        connectivity.observe(drop + Duration::from_secs(2), Some(false));
+        assert_eq!(connectivity.internet_loss_edge(), Some(drop));
+        // recovery then a fresh drop moves the edge forward
+        connectivity.observe(drop + Duration::from_secs(4), Some(true));
+        let second = drop + Duration::from_secs(6);
+        connectivity.observe(second, Some(false));
+        assert_eq!(connectivity.internet_loss_edge(), Some(second));
     }
 
     #[test]
